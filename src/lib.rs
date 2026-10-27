@@ -55,8 +55,41 @@ pub struct Editor {
     error_files: Vec<String>,
     confirm_close: bool,
     allow_close: bool,
+    pending_input: Vec<egui::Event>,
 }
 impl Editor {
+    // egui TextEdit can lose text when a focus-changing pointer event is
+    // coalesced into the same frame. Preserve event order across a frame
+    // boundary rather than reconstructing text/cursor edits ourselves.
+    fn prepare_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        let mut events = std::mem::take(&mut self.pending_input);
+        events.append(&mut input.events);
+        let mut pointer_seen = false;
+        let mut text_seen = false;
+        let mut boundary = None;
+        for (i, event) in events.iter().enumerate() {
+            let pointer = matches!(event, egui::Event::PointerButton { pressed: true, .. });
+            let text = matches!(
+                event,
+                egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Ime(egui::ImeEvent::Commit(_))
+            );
+            if (pointer && text_seen) || (text && pointer_seen) {
+                boundary = Some(i);
+                break;
+            }
+            pointer_seen |= pointer;
+            text_seen |= text;
+        }
+        if let Some(i) = boundary {
+            // A boundary always has an earlier event: each frame consumes a
+            // nonempty prefix. Only the unconsumed suffix is retained, once.
+            self.pending_input = events.split_off(i);
+            ctx.request_repaint();
+        }
+        input.events = events;
+    }
     fn add(&mut self, name: String, path: PathBuf, bytes: Vec<u8>) {
         if self.files.len() >= 10_000
             || self.files.iter().map(|f| f.original.len()).sum::<usize>() + bytes.len()
@@ -904,31 +937,35 @@ impl Editor {
                         .iter()
                         .find(|t| t.id == self.target)
                         .is_some_and(|t| t.warning.is_none());
-                    ui.add_enabled_ui(editable, |ui| {
-                        match serde_json::from_str::<serde_json::Value>(&self.properties) {
-                            Ok(mut value) => {
-                                if properties::edit(ui, &mut value) {
-                                    self.properties =
-                                        serde_json::to_string_pretty(&value).unwrap_or_default();
+                    egui::ScrollArea::vertical()
+                        .id_salt("properties-scroll")
+                        .show(ui, |ui| {
+                            ui.add_enabled_ui(editable, |ui| {
+                                match serde_json::from_str::<serde_json::Value>(&self.properties) {
+                                    Ok(mut value) => {
+                                        if properties::edit(ui, &mut value) {
+                                            self.properties = serde_json::to_string_pretty(&value)
+                                                .unwrap_or_default();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        ui.colored_label(
+                                            egui::Color32::LIGHT_RED,
+                                            format!("Invalid JSON: {e}"),
+                                        );
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                ui.colored_label(
-                                    egui::Color32::LIGHT_RED,
-                                    format!("Invalid JSON: {e}"),
-                                );
-                            }
-                        }
-                        ui.collapsing("Advanced JSON", |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.properties)
-                                    .id(egui::Id::new("metadata-properties"))
-                                    .code_editor()
-                                    .desired_rows(10)
-                                    .desired_width(f32::INFINITY),
-                            );
+                                ui.collapsing("Advanced JSON", |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.properties)
+                                            .id(egui::Id::new("metadata-properties"))
+                                            .code_editor()
+                                            .desired_rows(10)
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                });
+                            });
                         });
-                    });
                 }
                 Tab::Tags => {
                     if self.selection.selected.len() > 1 {
@@ -1038,6 +1075,9 @@ fn report_widget(name: &str, response: &egui::Response) {
     let _ = (name, response);
 }
 impl eframe::App for Editor {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.prepare_input(ctx, raw_input);
+    }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.draw(ctx);
     }
@@ -1337,5 +1377,86 @@ mod app_tests {
             .center();
         let _ = ctx.run(frame(click(button)), |ctx| e.draw(ctx));
         assert_eq!(e.files[0].doc.targets()[0].text, "Updated");
+    }
+    #[test]
+    fn coalesced_click_type_click_preserves_text_before_replace() {
+        let ctx = egui::Context::default();
+        let mut e = editor();
+        e.text = "Original".into();
+        e.commit_draft();
+        e.find_tab = true;
+        e.find = "Original".into();
+        let frame = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100., 750.),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(frame(vec![]), |ctx| e.draw(ctx));
+        let center = |name: &str| {
+            ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(format!("test-rect-{name}"))))
+                .unwrap()
+                .center()
+        };
+        let click = |p| {
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+        let mut events = click(center("replace"));
+        events.push(egui::Event::Text("Updated".into()));
+        events.extend(click(center("replace_all")));
+        let original_event_count = events.len();
+        let mut input = frame(events);
+        e.prepare_input(&ctx, &mut input);
+        assert_eq!(
+            input.events.len() + e.pending_input.len(),
+            original_event_count
+        );
+        let _ = ctx.run(input, |ctx| e.draw(ctx));
+        assert_eq!(e.files[0].doc.targets()[0].text, "Original");
+        let mut input = frame(vec![]);
+        e.prepare_input(&ctx, &mut input);
+        let _ = ctx.run(input, |ctx| e.draw(ctx));
+        assert_eq!(e.replace, "Updated");
+        let mut input = frame(vec![]);
+        e.prepare_input(&ctx, &mut input);
+        let _ = ctx.run(input, |ctx| e.draw(ctx));
+        assert!(e.pending_input.is_empty());
+        assert_eq!(e.files[0].doc.targets()[0].text, "Updated");
+    }
+    #[test]
+    fn pending_events_precede_new_input_without_duplication() {
+        let ctx = egui::Context::default();
+        let mut e = Editor {
+            pending_input: vec![egui::Event::Text("first".into())],
+            ..Default::default()
+        };
+        let mut input = egui::RawInput {
+            events: vec![
+                egui::Event::Paste("second".into()),
+                key(egui::Key::S, false),
+            ],
+            ..Default::default()
+        };
+        e.prepare_input(&ctx, &mut input);
+        assert!(e.pending_input.is_empty());
+        assert_eq!(input.events.len(), 3);
+        assert!(matches!(&input.events[0],egui::Event::Text(t) if t=="first"));
+        assert!(matches!(&input.events[1],egui::Event::Paste(t) if t=="second"));
     }
 }

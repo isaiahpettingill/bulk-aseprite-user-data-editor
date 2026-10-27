@@ -180,8 +180,9 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await renderInput();
     await page.waitForFunction(() => window.editorUi?.matches === 3);
     await clickControl('replace');
+    // Intentionally do not await a render after typing: rapid focus loss must
+    // preserve the final text even when typing and the click share a frame.
     await page.keyboard.type('Updated');
-    await renderInput();
     await clickControl('replace_all');
     await page.waitForFunction(() => window.editorUi?.matches === 0);
     const replaced = await saveArchive();

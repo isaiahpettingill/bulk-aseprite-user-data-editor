@@ -12,6 +12,7 @@
   expandable nested values, and preservation of untouched bulk-edit properties.
 - Move the user-data RGBA marker into Advanced; remove selection chevrons while
   retaining highlights and keyboard focus.
+- Preserve text when rapid typing and a focus-changing click arrive in one frame.
 - Add document redo, safe draft context changes, append-idempotency regressions,
   and browser tests that inspect the actual exported metadata.
 
