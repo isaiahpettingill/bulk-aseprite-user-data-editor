@@ -462,7 +462,9 @@ impl Editor {
                     }
                 });
             });
-        let editing = ctx.wants_keyboard_input();
+        let editing = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
         ctx.input(|input| {
             if input.modifiers.command && input.key_pressed(egui::Key::S) {
                 self.save();
