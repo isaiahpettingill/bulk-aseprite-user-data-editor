@@ -30,6 +30,22 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --release
+      - name: Compile Windows installer (includes destination chooser)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (!(Test-Path $nsis)) { choco install nsis --no-progress -y; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
+          Push-Location packaging
+          & $nsis windows.nsi
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Pop-Location
+      - name: Windows installer preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-installer-preview
+          path: packaging/*-setup.exe
   web:
     runs-on: ubuntu-22.04
     steps:
