@@ -11,17 +11,24 @@ Arrow keys move selection; Ctrl+arrow moves focus without changing selection;
 Shift+arrow extends the range. Space toggles the focused file. Ctrl+A selects
 visible files. Text fields retain their normal editing shortcuts.
 
-Choose the metadata scope on the right. **Append** is the default; **Override**
-replaces the selected field. Preview changes, review the affected files, then
-apply them to the in-memory documents. Save selected files with Ctrl+S; Ctrl+Z
-undoes an applied metadata edit before another save. The desktop app retains
-unique `.bak` recovery copies beside each saved file and refuses to overwrite
-files changed externally after opening. A partial failure is reported per file.
+Edit one file directly, or select several for bulk **Append** (default) / **Override**.
+**Ctrl+S** saves the current edits in one step—no preview or apply step required.
+The desktop app edits originals in-place with atomic replacement, unique `.bak`
+recovery copies and external-change checks. Web Ctrl+S downloads an edited ZIP.
 
-User data text, typed properties and tag metadata have separate tabs. Unsupported
-property encodings are preserved rather than guessed. Unknown chunks and image
-payloads remain unchanged. Malformed files are rejected, not silently repaired.
-Use the Tags tab for bulk find/replace in tag names or individual tag edits.
+**Find/Replace** is a separate tab. **Ctrl+F** or **Ctrl+H** opens it for the current
+selection. Choose user data or tag names, then **Replace all**; Ctrl+S saves.
+Outside text fields, **Ctrl+Z** undoes and **Ctrl+Shift+Z** redoes document changes.
+Text fields retain their own selection and undo shortcuts.
+
+Properties use name/type/value rows with expandable nested values. Bulk edits
+change only touched properties, preserving unrelated values. Raw JSON is an
+advanced option. **User-data color** is also under Advanced: it is a metadata
+marker, not an artwork or palette color.
+
+Unsupported property encodings and unknown chunks are preserved rather than
+guessed. Artwork payloads remain unchanged. Malformed files are rejected, not
+silently repaired. Individual tag names, bounds, direction and repeat are editable.
 
 The web version starts with **Open files**: select one or more `.ase` / `.aseprite`
 files. Only matching files are read locally; nothing is uploaded to a server.

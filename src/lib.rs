@@ -1,5 +1,6 @@
 pub mod aseprite;
 mod io;
+mod properties;
 mod selection;
 use aseprite::Document;
 use eframe::egui;
@@ -11,14 +12,15 @@ struct File {
     doc: Document,
     dirty: bool,
     undo: Vec<Vec<u8>>,
+    redo: Vec<Vec<u8>>,
 }
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Clone, Copy)]
 enum Mode {
     #[default]
     Append,
     Override,
 }
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Clone, Copy)]
 enum Tab {
     #[default]
     UserData,
@@ -38,7 +40,15 @@ pub struct Editor {
     find: String,
     replace: String,
     status: String,
-    preview: Vec<(usize, Document)>,
+    loaded_selection: BTreeSet<usize>,
+    loaded_target: usize,
+    initial_text: String,
+    initial_properties: String,
+    color_edit: Option<Option<[u8; 4]>>,
+    tag_edits: Option<Vec<aseprite::Tag>>,
+    find_tab: bool,
+    find_tags: bool,
+    focus_find: bool,
     loaded_focus: Option<usize>,
     settings: bool,
     separator: String,
@@ -70,6 +80,7 @@ impl Editor {
                     doc,
                     dirty: false,
                     undo: vec![],
+                    redo: vec![],
                 });
                 if self.selection.focus.is_none() {
                     self.selection.choose(0, false, false, &[0]);
@@ -102,76 +113,113 @@ impl Editor {
         #[cfg(target_arch = "wasm32")]
         io::open(directory);
     }
+    fn has_draft(&self) -> bool {
+        self.text != self.initial_text
+            || self.properties != self.initial_properties
+            || self.color_edit.is_some()
+            || self.tag_edits.is_some()
+    }
+    fn editing_focus(&self) -> Option<usize> {
+        self.selection
+            .focus
+            .filter(|i| self.selection.selected.contains(i))
+            .or_else(|| self.selection.selected.first().copied())
+    }
     fn sync_fields(&mut self) {
-        if self.loaded_focus == self.selection.focus {
+        if self.loaded_focus == self.editing_focus()
+            && self.loaded_selection == self.selection.selected
+            && self.loaded_target == self.target
+        {
             return;
         }
-        self.loaded_focus = self.selection.focus;
-        self.target = 0;
-        self.preview.clear();
-        if let Some(f) = self.selection.focus.and_then(|i| self.files.get(i)) {
-            if let Some(t) = f.doc.targets().first() {
-                self.text = if self.mode == Mode::Append {
+        if !self.commit_draft() {
+            self.selection.focus = self.loaded_focus;
+            self.selection.selected = self.loaded_selection.clone();
+            self.target = self.loaded_target;
+            return;
+        }
+        if self.loaded_focus != self.editing_focus() {
+            self.target = 0;
+        }
+        self.load_fields();
+    }
+    fn load_fields(&mut self) {
+        self.loaded_focus = self.editing_focus();
+        self.loaded_selection = self.selection.selected.clone();
+        self.loaded_target = self.target;
+        let target = self
+            .loaded_focus
+            .and_then(|i| self.files.get(i))
+            .and_then(|f| f.doc.targets().into_iter().find(|t| t.id == self.target));
+        self.text = target
+            .as_ref()
+            .map(|t| {
+                if self.loaded_selection.len() > 1 && self.mode == Mode::Append {
                     String::new()
                 } else {
                     t.text.clone()
-                };
-                self.properties = t
-                    .properties
-                    .as_ref()
-                    .map(|p| serde_json::to_string_pretty(p).unwrap_or_default())
-                    .unwrap_or_else(|| "{\"maps\":[]}".into());
-            }
-        }
+                }
+            })
+            .unwrap_or_default();
+        self.properties = target
+            .as_ref()
+            .and_then(|t| t.properties.as_ref())
+            .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
+            .unwrap_or_else(|| "{\"maps\":[]}".into());
+        self.initial_text = self.text.clone();
+        self.initial_properties = self.properties.clone();
+        self.color_edit = None;
+        self.tag_edits = None;
     }
-    fn stage(&mut self, find_replace: bool) {
-        if !find_replace
-            && self.tab == Tab::UserData
-            && self.mode == Mode::Append
-            && self.text.is_empty()
-        {
-            self.preview.clear();
-            self.status = "Nothing to append".into();
-            return;
+    fn commit_draft(&mut self) -> bool {
+        if !self.has_draft() {
+            return true;
         }
-        self.preview.clear();
-        self.error_files.clear();
-        for &i in &self.selection.selected {
+        let Some(source) = self
+            .loaded_focus
+            .and_then(|i| self.files.get(i))
+            .and_then(|f| {
+                f.doc
+                    .targets()
+                    .into_iter()
+                    .find(|t| t.id == self.loaded_target)
+            })
+        else {
+            self.status = "Select a file before editing".into();
+            return false;
+        };
+        let properties = if self.properties != self.initial_properties {
+            match serde_json::from_str::<serde_json::Value>(&self.properties) {
+                Ok(v) => {
+                    if let Err(e) = properties::validate(&v) {
+                        self.status = e;
+                        return false;
+                    }
+                    Some(v)
+                }
+                Err(e) => {
+                    self.status = format!("Invalid properties: {e}");
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        let mut changes = Vec::new();
+        for &i in &self.loaded_selection {
             let mut doc = self.files[i].doc.clone();
             let result: Result<(), String> = (|| {
-                if self.tab == Tab::Tags {
-                    for mut tag in doc.tags() {
-                        tag.name = tag.name.replace(&self.find, &self.replace);
-                        doc.set_tag(&tag)?;
-                    }
-                    return Ok(());
-                }
-                let source = self
-                    .selection
-                    .focus
-                    .and_then(|idx| {
-                        self.files[idx]
-                            .doc
-                            .targets()
-                            .into_iter()
-                            .find(|t| t.id == self.target)
-                    })
-                    .ok_or("Select a metadata scope")?;
                 let target = doc
                     .targets()
                     .into_iter()
                     .find(|t| t.kind == source.kind && t.label == source.label)
-                    .ok_or("Selected metadata scope is absent")?;
-                if self.tab == Tab::Properties {
-                    let value =
-                        serde_json::from_str(&self.properties).map_err(|e| e.to_string())?;
-                    doc.set_properties(target.id, &value)?;
-                } else {
-                    let text = if find_replace {
-                        target.text.replace(&self.find, &self.replace)
-                    } else if self.mode == Mode::Override || target.text.is_empty() {
-                        self.text.clone()
-                    } else {
+                    .ok_or("Metadata scope is absent")?;
+                if self.text != self.initial_text {
+                    let text = if self.loaded_selection.len() > 1
+                        && self.mode == Mode::Append
+                        && !target.text.is_empty()
+                        && !self.text.is_empty()
+                    {
                         format!(
                             "{}{}{}",
                             target.text,
@@ -182,47 +230,185 @@ impl Editor {
                             },
                             self.text
                         )
+                    } else if self.loaded_selection.len() > 1
+                        && self.mode == Mode::Append
+                        && self.text.is_empty()
+                    {
+                        target.text
+                    } else {
+                        self.text.clone()
                     };
                     doc.set_text(target.id, &text)?;
                 }
-                Ok(())
-            })();
-            match result {
-                Ok(()) => {
-                    if doc.encode().ok() != self.files[i].doc.encode().ok() {
-                        self.preview.push((i, doc));
+                if let Some(p) = &properties {
+                    let base = serde_json::from_str(&self.initial_properties)
+                        .map_err(|e| format!("Invalid baseline: {e}"))?;
+                    let destination = target
+                        .properties
+                        .unwrap_or_else(|| serde_json::json!({"maps":[]}));
+                    let merged = properties::merge_changes(&base, p, &destination)?;
+                    doc.set_properties(target.id, &merged)?;
+                }
+                if let Some(color) = self.color_edit {
+                    doc.set_color(target.id, color)?;
+                }
+                if Some(i) == self.loaded_focus {
+                    if let Some(tags) = &self.tag_edits {
+                        for tag in tags {
+                            doc.set_tag(tag)?;
+                        }
                     }
                 }
-                Err(e) => self
-                    .error_files
-                    .push(format!("{}: {e}", self.files[i].name)),
+                Ok(())
+            })();
+            if let Err(e) = result {
+                self.status = format!("{}: {e}", self.files[i].name);
+                return false;
+            }
+            if doc.encode().ok() != self.files[i].doc.encode().ok() {
+                changes.push((i, doc));
             }
         }
-        self.status = format!("{} files will change", self.preview.len());
+        self.apply_changes(changes);
+        self.initial_text = self.text.clone();
+        self.initial_properties = self.properties.clone();
+        self.color_edit = None;
+        self.tag_edits = None;
+        // Consume bulk append input once; Save cannot append it again.
+        if self.loaded_selection.len() > 1 && self.mode == Mode::Append {
+            self.text.clear();
+            self.initial_text.clear();
+        }
+        true
     }
-    fn apply(&mut self) {
-        for (i, doc) in self.preview.drain(..) {
+    fn apply_changes(&mut self, changes: Vec<(usize, Document)>) {
+        for (i, doc) in changes {
             if let Ok(before) = self.files[i].doc.encode() {
-                self.files[i].undo.push(before);
-                self.files[i].doc = doc;
-                self.files[i].dirty = true;
+                let f = &mut self.files[i];
+                f.undo.push(before);
+                f.redo.clear();
+                f.doc = doc;
+                f.dirty = f.doc.encode().map(|b| b != f.original).unwrap_or(true);
             }
         }
-        self.status = "Changes staged. Save when ready.".into();
-        self.loaded_focus = None;
     }
     fn undo(&mut self) {
+        if !self.commit_draft() {
+            return;
+        }
         for &i in &self.selection.selected {
-            if let Some(bytes) = self.files[i].undo.pop() {
+            let f = &mut self.files[i];
+            if let Some(bytes) = f.undo.pop() {
                 if let Ok(doc) = Document::parse(&bytes) {
-                    self.files[i].doc = doc;
-                    self.files[i].dirty = bytes != self.files[i].original;
+                    if let Ok(current) = f.doc.encode() {
+                        f.redo.push(current);
+                    }
+                    f.doc = doc;
+                    f.dirty = bytes != f.original;
                 }
             }
         }
-        self.loaded_focus = None;
+        self.load_fields();
+    }
+    fn redo(&mut self) {
+        if !self.commit_draft() {
+            return;
+        }
+        for &i in &self.selection.selected {
+            let f = &mut self.files[i];
+            if let Some(bytes) = f.redo.pop() {
+                if let Ok(doc) = Document::parse(&bytes) {
+                    if let Ok(current) = f.doc.encode() {
+                        f.undo.push(current);
+                    }
+                    f.doc = doc;
+                    f.dirty = bytes != f.original;
+                }
+            }
+        }
+        self.load_fields();
+    }
+    fn scope(&self) -> Option<aseprite::Target> {
+        self.loaded_focus
+            .and_then(|i| self.files.get(i))
+            .and_then(|f| f.doc.targets().into_iter().find(|t| t.id == self.target))
+    }
+    fn matches(&self) -> usize {
+        if self.find.is_empty() {
+            return 0;
+        }
+        self.selection
+            .selected
+            .iter()
+            .map(|&i| {
+                if self.find_tags {
+                    self.files[i]
+                        .doc
+                        .tags()
+                        .iter()
+                        .map(|t| t.name.matches(&self.find).count())
+                        .sum::<usize>()
+                } else {
+                    self.files[i]
+                        .doc
+                        .targets()
+                        .iter()
+                        .filter(|t| {
+                            self.scope().is_some_and(|source| {
+                                t.kind == source.kind && t.label == source.label
+                            })
+                        })
+                        .map(|t| t.text.matches(&self.find).count())
+                        .sum()
+                }
+            })
+            .sum()
+    }
+    fn replace_all(&mut self) {
+        if !self.commit_draft() || self.find.is_empty() {
+            return;
+        }
+        let mut changes = Vec::new();
+        self.error_files.clear();
+        for &i in &self.selection.selected {
+            let mut doc = self.files[i].doc.clone();
+            let result: Result<(), String> = (|| {
+                if self.find_tags {
+                    for mut tag in doc.tags() {
+                        tag.name = tag.name.replace(&self.find, &self.replace);
+                        doc.set_tag(&tag)?;
+                    }
+                } else {
+                    let source = self.scope().ok_or("Select a metadata scope")?;
+                    let target = doc
+                        .targets()
+                        .into_iter()
+                        .find(|t| t.kind == source.kind && t.label == source.label)
+                        .ok_or("Metadata scope is absent")?;
+                    let value = target.text.replace(&self.find, &self.replace);
+                    if value != target.text {
+                        doc.set_text(target.id, &value)?;
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(e) = result {
+                self.status = format!("{}: {e}", self.files[i].name);
+                return;
+            }
+            if doc.encode().ok() != self.files[i].doc.encode().ok() {
+                changes.push((i, doc));
+            }
+        }
+        self.status = format!("Replaced in {} files", changes.len());
+        self.apply_changes(changes);
+        self.load_fields();
     }
     fn save(&mut self) {
+        self.sync_fields();
+        if !self.commit_draft() {
+            return;
+        }
         self.error_files.clear();
         let mut saved = 0;
         #[cfg(target_arch = "wasm32")]
@@ -295,11 +481,13 @@ impl Editor {
 }
 impl Editor {
     fn draw(&mut self, ctx: &egui::Context) {
-        let previous_selection = self.selection.selected.clone();
+        self.sync_fields();
+        report_state(self.find_tab, self.matches());
+        let mut save_requested = false;
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input(|i| i.viewport().close_requested())
             && !self.allow_close
-            && (self.files.iter().any(|f| f.dirty) || !self.preview.is_empty())
+            && (self.files.iter().any(|f| f.dirty) || self.has_draft())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_close = true;
@@ -307,7 +495,7 @@ impl Editor {
         #[cfg(target_arch = "wasm32")]
         {
             io::report(self.files.len(), self.selection.selected.len());
-            io::dirty(self.files.iter().any(|f| f.dirty) || !self.preview.is_empty());
+            io::dirty(self.files.iter().any(|f| f.dirty) || self.has_draft());
             use wasm_bindgen::JsValue;
             for item in io::poll().iter() {
                 if let Ok(message) = js_sys::Reflect::get(&item, &JsValue::from_str("status")) {
@@ -346,7 +534,7 @@ impl Editor {
                 }
                 if ui
                     .add_enabled(
-                        self.files.iter().any(|f| f.dirty),
+                        self.files.iter().any(|f| f.dirty) || self.has_draft(),
                         egui::Button::new(if cfg!(target_arch = "wasm32") {
                             "Export selected ZIP"
                         } else {
@@ -356,7 +544,7 @@ impl Editor {
                     .on_hover_text("Ctrl+S")
                     .clicked()
                 {
-                    self.save();
+                    save_requested = true;
                 }
                 if ui
                     .button("Undo")
@@ -425,11 +613,18 @@ impl Editor {
                             let label = format!(
                                 "{}{}",
                                 parts.last().unwrap_or(&""),
-                                if f.dirty { " •" } else { "" }
+                                if f.dirty
+                                    || (self.loaded_selection.contains(&i) && self.has_draft())
+                                {
+                                    " •"
+                                } else {
+                                    ""
+                                }
                             );
                             let response = ui
                                 .selectable_label(self.selection.selected.contains(&i), label)
                                 .on_hover_text(&f.name);
+                            report_widget(&format!("file-{i}"), &response);
                             // Ctrl+arrow can focus an unselected row. Keep that keyboard
                             // location visible without adding a selection chevron.
                             if self.selection.focus == Some(i)
@@ -469,7 +664,7 @@ impl Editor {
                     }
                     if let Some((i, c, s)) = chosen {
                         self.selection.choose(i, c, s, &visible);
-                        self.preview.clear();
+                        self.sync_fields();
                     }
                     if let Some(save) = action {
                         if save {
@@ -483,8 +678,7 @@ impl Editor {
         let editing = ctx
             .memory(|m| m.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-        let key_events = ctx.input(|input| input.events.clone());
-        for event in key_events {
+        for event in ctx.input(|input| input.events.clone()) {
             let egui::Event::Key {
                 key,
                 pressed: true,
@@ -496,14 +690,32 @@ impl Editor {
             };
             let command = modifiers.command || modifiers.ctrl;
             if command && key == egui::Key::S {
-                self.save();
+                save_requested = true;
+                continue;
+            }
+            if command && matches!(key, egui::Key::F | egui::Key::H) {
+                if self.commit_draft() {
+                    self.find_tab = true;
+                    self.focus_find = true;
+                }
+                continue;
+            }
+            if key == egui::Key::Escape {
+                self.settings = false;
+                self.confirm_close = false;
+                if self.find_tab {
+                    self.find_tab = false;
+                }
+                continue;
             }
             if editing {
                 continue;
             }
             match key {
                 egui::Key::A if command => self.selection.selected.extend(visible.iter().copied()),
+                egui::Key::Z if command && modifiers.shift => self.redo(),
                 egui::Key::Z if command => self.undo(),
+                egui::Key::Y if command => self.redo(),
                 egui::Key::ArrowUp => self.selection.step(-1, command, modifiers.shift, &visible),
                 egui::Key::ArrowDown => self.selection.step(1, command, modifiers.shift, &visible),
                 egui::Key::Space => {
@@ -514,9 +726,6 @@ impl Editor {
                 _ => {}
             }
         }
-        if previous_selection != self.selection.selected {
-            self.preview.clear();
-        }
         self.sync_fields();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.label(&self.status);
@@ -524,63 +733,247 @@ impl Editor {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             }
         });
-        egui::CentralPanel::default().show(ctx,|ui|{
-   if self.files.is_empty(){ui.centered_and_justified(|ui|{ui.label("Open .ase or .aseprite files");});return;}
-   if self.selection.selected.is_empty(){ui.label("Select files to edit");return;}
-   ui.horizontal(|ui|{if ui.selectable_value(&mut self.tab,Tab::UserData,"User data").changed(){self.preview.clear();}
-if ui.selectable_value(&mut self.tab,Tab::Properties,"Properties").changed(){self.preview.clear();}
-if ui.selectable_value(&mut self.tab,Tab::Tags,"Tags").changed(){self.preview.clear();}});ui.separator();
-   if let Some(i)=self.selection.focus {
-    let targets=self.files[i].doc.targets();let before=self.target;
-    if self.tab!=Tab::Tags {egui::ComboBox::from_label("Scope").selected_text(targets.iter().find(|t|t.id==self.target).map(|t|t.label.as_str()).unwrap_or("Sprite")).show_ui(ui,|ui|{for t in &targets{ui.selectable_value(&mut self.target,t.id,&t.label);}});}
-    if before!=self.target{self.preview.clear();if let Some(t)=targets.iter().find(|t|t.id==self.target){self.text=if self.mode==Mode::Append{String::new()}else{t.text.clone()};self.properties=t.properties.as_ref().map(|p|serde_json::to_string_pretty(p).unwrap_or_default()).unwrap_or_else(||"{\"maps\":[]}".into());}}
-    match self.tab {
-     Tab::UserData=>{
-      ui.horizontal(|ui|{if ui.selectable_value(&mut self.mode,Mode::Append,"Append").changed(){self.text.clear();}
-if ui.selectable_value(&mut self.mode,Mode::Override,"Override").changed(){self.text=targets.iter().find(|t|t.id==self.target).map(|t|t.text.clone()).unwrap_or_default();}});
-      if let Some(t)=targets.iter().find(|t|t.id==self.target){ui.collapsing("Current value",|ui|{ui.label(&t.text);});}
-      if ui.add(egui::TextEdit::multiline(&mut self.text).desired_rows(9).desired_width(f32::INFINITY)).changed(){self.preview.clear();}
-      if ui.button("Preview changes").clicked(){self.stage(false);}
-      if let Some(target)=targets.iter().find(|t|t.id==self.target) {
-       let mut rgba=self.preview.iter().find(|(idx,_)|*idx==i).and_then(|(_,doc)|doc.targets().into_iter().find(|t|t.id==self.target)).and_then(|t|t.color).or(target.color).unwrap_or([0,0,0,255]);
-       ui.horizontal(|ui|{ui.label("Metadata color");let changed=ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed();let clear=ui.small_button("Clear").clicked();
-        if changed||clear {self.preview.clear();for &idx in &self.selection.selected {let mut doc=self.files[idx].doc.clone();if let Some(t)=doc.targets().into_iter().find(|t|t.kind==target.kind&&t.label==target.label){match doc.set_color(t.id,if clear{None}else{Some(rgba)}){Ok(())=>self.preview.push((idx,doc)),Err(e)=>self.status=e}}}}
-       });
-      }
-
-     }
-     Tab::Properties=>{
-      if let Some(w)=targets.iter().find(|t|t.id==self.target).and_then(|t|t.warning.as_ref()){ui.colored_label(egui::Color32::YELLOW,w);}
-      if ui.add(egui::TextEdit::multiline(&mut self.properties).code_editor().desired_rows(12).desired_width(f32::INFINITY)).changed(){self.preview.clear();}
-      if ui.button("Preview property replacement").clicked(){self.stage(false);}
-     }
-     Tab::Tags=>{
-      egui::ScrollArea::vertical().max_height(260.0).show(ui,|ui|{
-       let mut tags=self.preview.iter().find(|(idx,_)|*idx==i).map(|(_,doc)|doc.tags()).unwrap_or_else(||self.files[i].doc.tags());let mut edited=false;
-       for tag in &mut tags {ui.horizontal(|ui|{
-        edited|=ui.text_edit_singleline(&mut tag.name).changed();
-        edited|=ui.add(egui::DragValue::new(&mut tag.from).prefix("From ")).changed();
-        edited|=ui.add(egui::DragValue::new(&mut tag.to).prefix("To ")).changed();
-        edited|=ui.add(egui::DragValue::new(&mut tag.direction).range(0..=3).prefix("Direction ")).on_hover_text("0 Forward · 1 Reverse · 2 Ping-pong · 3 Reverse ping-pong").changed();
-        edited|=ui.add(egui::DragValue::new(&mut tag.repeat).prefix("Repeat ")).changed();
-       });}
-       if edited{let mut doc=self.preview.iter().find(|(idx,_)|*idx==i).map(|(_,doc)|doc.clone()).unwrap_or_else(||self.files[i].doc.clone());for tag in tags{if let Err(e)=doc.set_tag(&tag){self.status=e;return;}}self.preview=vec![(i,doc)];}
-      });
-     }
-    }
-   }
-   if self.tab!=Tab::Properties {ui.separator();ui.horizontal(|ui|{ui.label("Find");if ui.text_edit_singleline(&mut self.find).changed(){self.preview.clear();}ui.label("Replace");if ui.text_edit_singleline(&mut self.replace).changed(){self.preview.clear();}});if ui.add_enabled(!self.find.is_empty(),egui::Button::new(if self.tab==Tab::Tags{"Preview tag rename"}else{"Preview find & replace"})).clicked(){self.stage(true);}}
-   if !self.preview.is_empty(){ui.separator();ui.heading(format!("Review · {} files",self.preview.len()));
-    egui::ScrollArea::vertical().max_height(190.0).show(ui,|ui|{for (i,doc) in &self.preview {ui.collapsing(&self.files[*i].name,|ui|{
-      if self.tab==Tab::Tags{ui.label(format!("Before: {}",self.files[*i].doc.tags().iter().map(|t|format!("{} [{}–{}; dir {}; repeat {}]",t.name,t.from,t.to,t.direction,t.repeat)).collect::<Vec<_>>().join(", ")));ui.label(format!("After: {}",doc.tags().iter().map(|t|format!("{} [{}–{}; dir {}; repeat {}]",t.name,t.from,t.to,t.direction,t.repeat)).collect::<Vec<_>>().join(", ")));}
-      else {let before=self.files[*i].doc.targets();let after=doc.targets();for new in after{if let Some(old)=before.iter().find(|t|t.id==new.id){if old.text!=new.text{ui.label(format!("− {}",old.text));ui.label(format!("+ {}",new.text));}
-if old.color!=new.color{ui.label(format!("Color: {:?} → {:?}",old.color,new.color));}
-if old.properties!=new.properties{ui.label(format!("− {:?}",old.properties));ui.label(format!("+ {:?}",new.properties));}}}}
-    });}});
-    ui.horizontal(|ui|{if ui.button("Apply to staged files").clicked(){self.apply();}
-if ui.button("Cancel").clicked(){self.preview.clear();}});
-   }
-  });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.files.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Open .ase or .aseprite files");
+                });
+                return;
+            }
+            if self.selection.selected.is_empty() {
+                ui.label("Select files to edit");
+                return;
+            }
+            let before = self.find_tab;
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.find_tab, false, "Edit");
+                ui.selectable_value(&mut self.find_tab, true, "Find / Replace")
+                    .on_hover_text("Ctrl+F or Ctrl+H");
+            });
+            if self.find_tab != before && !self.commit_draft() {
+                self.find_tab = before;
+            }
+            ui.separator();
+            if self.find_tab {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.find_tags, false, "User data");
+                    ui.selectable_value(&mut self.find_tags, true, "Tag names");
+                });
+                if !self.find_tags {
+                    if let Some(i) = self.loaded_focus {
+                        let targets = self.files[i].doc.targets();
+                        egui::ComboBox::from_id_salt("find-scope")
+                            .selected_text(
+                                self.scope()
+                                    .map(|t| t.label)
+                                    .unwrap_or_else(|| "Sprite".into()),
+                            )
+                            .show_ui(ui, |ui| {
+                                for target in targets {
+                                    ui.selectable_value(&mut self.target, target.id, target.label);
+                                }
+                            });
+                        self.sync_fields();
+                    }
+                }
+                ui.label(format!("{} selected files", self.selection.selected.len()));
+                ui.label("Find");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.find)
+                        .id(egui::Id::new("find-text"))
+                        .desired_width(f32::INFINITY),
+                );
+                report_widget("find", &response);
+                if self.focus_find {
+                    response.request_focus();
+                    self.focus_find = false;
+                }
+                ui.label("Replace with");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.replace)
+                        .id(egui::Id::new("replace-text"))
+                        .desired_width(f32::INFINITY),
+                );
+                report_widget("replace", &response);
+                let count = self.matches();
+                ui.horizontal(|ui| {
+                    ui.label(format!("{count} matches"));
+                    let response = ui.add_enabled(count > 0, egui::Button::new("Replace all"));
+                    report_widget("replace_all", &response);
+                    if response.clicked() {
+                        self.replace_all();
+                    }
+                });
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::UserData, "User data");
+                ui.selectable_value(&mut self.tab, Tab::Properties, "Properties");
+                ui.selectable_value(&mut self.tab, Tab::Tags, "Tags");
+            });
+            let Some(i) = self.loaded_focus else {
+                return;
+            };
+            let targets = self.files[i].doc.targets();
+            if self.tab != Tab::Tags {
+                egui::ComboBox::from_label("Scope")
+                    .selected_text(
+                        targets
+                            .iter()
+                            .find(|t| t.id == self.target)
+                            .map(|t| t.label.as_str())
+                            .unwrap_or("Sprite"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for t in &targets {
+                            ui.selectable_value(&mut self.target, t.id, &t.label);
+                        }
+                    });
+                self.sync_fields();
+            }
+            match self.tab {
+                Tab::UserData => {
+                    if self.selection.selected.len() > 1 {
+                        let old = self.mode;
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut self.mode, Mode::Append, "Append");
+                            ui.selectable_value(&mut self.mode, Mode::Override, "Override");
+                        });
+                        if old != self.mode {
+                            let new = self.mode;
+                            self.mode = old;
+                            if self.commit_draft() {
+                                self.mode = new;
+                                self.load_fields();
+                            }
+                        }
+                    }
+                    let response = ui.add(
+                        egui::TextEdit::multiline(&mut self.text)
+                            .id(egui::Id::new("metadata-text"))
+                            .desired_rows(10)
+                            .desired_width(f32::INFINITY),
+                    );
+                    report_widget("text", &response);
+                    ui.collapsing("Advanced", |ui| {
+                        if let Some(target) = targets.iter().find(|t| t.id == self.target) {
+                            let current = self.color_edit.unwrap_or(target.color);
+                            let mut rgba = current.unwrap_or([0, 0, 0, 255]);
+                            ui.horizontal(|ui| {
+                                ui.label("User-data color").on_hover_text(
+                                    "Metadata marker only; does not change pixels or palette.",
+                                );
+                                if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
+                                    self.color_edit = Some(Some(rgba));
+                                }
+                                if ui
+                                    .add_enabled(
+                                        current.is_some() || self.selection.selected.len() > 1,
+                                        egui::Button::new("Clear"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.color_edit = Some(None);
+                                }
+                            });
+                        }
+                    });
+                }
+                Tab::Properties => {
+                    if let Some(source) = targets.iter().find(|t| t.id == self.target) {
+                        let mixed = self.selection.selected.iter().any(|idx| {
+                            self.files[*idx]
+                                .doc
+                                .targets()
+                                .into_iter()
+                                .find(|t| t.kind == source.kind && t.label == source.label)
+                                .is_none_or(|t| t.properties != source.properties)
+                        });
+                        if mixed {
+                            ui.label("Mixed values — only edited properties change");
+                        }
+                    }
+                    if let Some(w) = targets
+                        .iter()
+                        .find(|t| t.id == self.target)
+                        .and_then(|t| t.warning.as_ref())
+                    {
+                        ui.colored_label(egui::Color32::YELLOW, w);
+                    }
+                    let editable = targets
+                        .iter()
+                        .find(|t| t.id == self.target)
+                        .is_some_and(|t| t.warning.is_none());
+                    ui.add_enabled_ui(editable, |ui| {
+                        match serde_json::from_str::<serde_json::Value>(&self.properties) {
+                            Ok(mut value) => {
+                                if properties::edit(ui, &mut value) {
+                                    self.properties =
+                                        serde_json::to_string_pretty(&value).unwrap_or_default();
+                                }
+                            }
+                            Err(e) => {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_RED,
+                                    format!("Invalid JSON: {e}"),
+                                );
+                            }
+                        }
+                        ui.collapsing("Advanced JSON", |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.properties)
+                                    .id(egui::Id::new("metadata-properties"))
+                                    .code_editor()
+                                    .desired_rows(10)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                    });
+                }
+                Tab::Tags => {
+                    if self.selection.selected.len() > 1 {
+                        ui.label("Editing focused file · use Find / Replace for bulk renaming");
+                    }
+                    let mut tags = self
+                        .tag_edits
+                        .clone()
+                        .unwrap_or_else(|| self.files[i].doc.tags());
+                    let mut edited = false;
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for tag in &mut tags {
+                            ui.horizontal(|ui| {
+                                edited |= ui.text_edit_singleline(&mut tag.name).changed();
+                                edited |= ui
+                                    .add(egui::DragValue::new(&mut tag.from).prefix("From "))
+                                    .changed();
+                                edited |= ui
+                                    .add(egui::DragValue::new(&mut tag.to).prefix("To "))
+                                    .changed();
+                                edited |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut tag.direction)
+                                            .range(0..=3)
+                                            .prefix("Direction "),
+                                    )
+                                    .on_hover_text(
+                                        "0 Forward · 1 Reverse · 2 Ping-pong · 3 Reverse ping-pong",
+                                    )
+                                    .changed();
+                                edited |= ui
+                                    .add(egui::DragValue::new(&mut tag.repeat).prefix("Repeat "))
+                                    .changed();
+                            });
+                        }
+                    });
+                    if edited {
+                        self.tag_edits = Some(tags);
+                    }
+                }
+            }
+        });
+        if save_requested {
+            self.save();
+        }
         if self.confirm_close {
             egui::Window::new("Unsaved changes")
                 .collapsible(false)
@@ -610,6 +1003,31 @@ if ui.button("Cancel").clicked(){self.preview.clear();}});
             });
     }
 }
+// Geometry-only diagnostics for automated browser interaction; no file data.
+#[cfg(target_arch = "wasm32")]
+fn report_state(find_tab: bool, matches: usize) {
+    let o = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&o, &"findTab".into(), &find_tab.into());
+    let _ = js_sys::Reflect::set(&o, &"matches".into(), &(matches as f64).into());
+    let _ = js_sys::Reflect::set(&js_sys::global(), &"editorUi".into(), &o);
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn report_state(_: bool, _: usize) {}
+#[cfg(target_arch = "wasm32")]
+fn report_widget(name: &str, response: &egui::Response) {
+    if let Ok(o) = js_sys::Reflect::get(&js_sys::global(), &"editorUi".into()) {
+        let p = response.rect.center();
+        let a = js_sys::Array::new();
+        a.push(&(p.x as f64).into());
+        a.push(&(p.y as f64).into());
+        let _ = js_sys::Reflect::set(&o, &name.into(), &a);
+        if name == "find" {
+            let _ = js_sys::Reflect::set(&o, &"findFocused".into(), &response.has_focus().into());
+        }
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn report_widget(_: &str, _: &egui::Response) {}
 impl eframe::App for Editor {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.draw(ctx);
@@ -639,106 +1057,222 @@ mod app_tests {
     use super::*;
     fn fixture() -> Vec<u8> {
         let mut b = vec![0; 144];
-        b[0..4].copy_from_slice(&144u32.to_le_bytes());
+        b[..4].copy_from_slice(&144u32.to_le_bytes());
         b[4..6].copy_from_slice(&0xa5e0u16.to_le_bytes());
-        b[6..8].copy_from_slice(&1u16.to_le_bytes());
-        b[8..10].copy_from_slice(&1u16.to_le_bytes());
-        b[10..12].copy_from_slice(&1u16.to_le_bytes());
-        b[12..14].copy_from_slice(&32u16.to_le_bytes());
+        for p in [6, 8, 10] {
+            b[p..p + 2].copy_from_slice(&1u16.to_le_bytes());
+        }
+        b[12] = 32;
         b[128..132].copy_from_slice(&16u32.to_le_bytes());
         b[132..134].copy_from_slice(&0xf1fau16.to_le_bytes());
         b
     }
-    #[test]
-    fn preview_cancel_apply_undo_are_non_destructive() {
+    fn editor() -> Editor {
         let mut e = Editor::default();
-        e.add("art.aseprite".into(), "art.aseprite".into(), fixture());
-        e.selection.choose(0, false, false, &[0]);
+        for name in ["one.aseprite", "two.aseprite"] {
+            e.add(name.into(), name.into(), fixture());
+        }
+        e.sync_fields();
+        e
+    }
+    #[test]
+    fn single_edit_commit_is_direct_and_idempotent() {
+        let mut e = editor();
+        e.text = "hello".into();
+        assert!(e.commit_draft());
+        assert_eq!(e.files[0].doc.targets()[0].text, "hello");
+        assert_eq!(e.files[0].undo.len(), 1);
+        assert!(e.commit_draft());
+        assert_eq!(e.files[0].undo.len(), 1);
+        e.text = "changed".into();
+        assert!(e.commit_draft());
+        assert_eq!(e.files[0].doc.targets()[0].text, "changed");
+    }
+    #[test]
+    fn bulk_append_consumed_once() {
+        let mut e = editor();
+        e.files[0].doc.set_text(0, "old").unwrap();
+        e.files[1].doc.set_text(0, "other").unwrap();
+        e.selection.selected.extend([0, 1]);
+        e.sync_fields();
+        assert!(e.text.is_empty());
+        e.text = "new".into();
+        assert!(e.commit_draft());
+        assert!(e.text.is_empty());
+        assert!(e.commit_draft());
+        assert_eq!(e.files[0].doc.targets()[0].text, "old\nnew");
+        assert_eq!(e.files[1].doc.targets()[0].text, "other\nnew");
+    }
+    #[test]
+    fn switching_selection_stages_old_draft_without_leaking() {
+        let mut e = editor();
+        e.text = "one only".into();
+        e.selection.choose(1, false, false, &[0, 1]);
+        e.sync_fields();
+        assert_eq!(e.files[0].doc.targets()[0].text, "one only");
+        assert!(e.text.is_empty());
+        assert_eq!(e.loaded_focus, Some(1));
+        assert_eq!(e.files[1].doc.targets()[0].text, "");
+    }
+    #[test]
+    fn invalid_draft_prevents_context_switch() {
+        let mut e = editor();
+        e.properties = "invalid".into();
+        e.selection.choose(1, false, false, &[0, 1]);
+        e.sync_fields();
+        assert_eq!(e.selection.focus, Some(0));
+        assert_eq!(e.properties, "invalid");
+        assert!(!e.files[0].dirty);
+    }
+    #[test]
+    fn replacement_is_explicit_undoable_not_repeated_by_save() {
+        let mut e = editor();
+        e.text = "cat cat".into();
+        e.commit_draft();
+        e.find = "cat".into();
+        e.replace = "catcat".into();
+        assert_eq!(e.matches(), 2);
+        e.replace_all();
+        assert_eq!(e.files[0].doc.targets()[0].text, "catcat catcat");
+        e.commit_draft();
+        assert_eq!(e.files[0].doc.targets()[0].text, "catcat catcat");
+        e.undo();
+        assert_eq!(e.files[0].doc.targets()[0].text, "cat cat");
+        e.redo();
+        assert_eq!(e.files[0].doc.targets()[0].text, "catcat catcat");
+    }
+    #[test]
+    fn save_commits_visible_draft_without_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sprite.aseprite");
+        std::fs::write(&path, fixture()).unwrap();
+        let mut e = Editor::default();
+        e.add("sprite.aseprite".into(), path.clone(), fixture());
         e.sync_fields();
         e.text = "credits=Artist".into();
-        e.stage(false);
-        assert_eq!(e.preview.len(), 1);
-        assert!(!e.files[0].dirty);
-        e.preview.clear();
-        assert_eq!(e.files[0].doc.targets()[0].text, "");
-        e.stage(false);
-        e.apply();
-        assert_eq!(e.files[0].doc.targets()[0].text, "credits=Artist");
-        assert!(e.files[0].dirty);
-        e.undo();
-        assert!(!e.files[0].dirty);
-        assert_eq!(e.files[0].doc.targets()[0].text, "");
-    }
-    #[test]
-    fn blank_append_is_noop() {
-        let mut e = Editor::default();
-        e.add("art.aseprite".into(), "art.aseprite".into(), fixture());
-        e.selection.choose(0, false, false, &[0]);
-        e.stage(false);
-        assert!(e.preview.is_empty());
-    }
-    #[test]
-    fn headless_egui_renders_all_tabs_and_preview() {
-        let ctx = egui::Context::default();
-        let mut editor = Editor::default();
-        editor.add(
-            "folder/art.aseprite".into(),
-            "folder/art.aseprite".into(),
-            fixture(),
+        e.save();
+        assert!(e.error_files.is_empty(), "{:?}", e.error_files);
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(
+            Document::parse(&saved).unwrap().targets()[0].text,
+            "credits=Artist"
         );
-        editor.selection.choose(0, false, false, &[0]);
+        e.save();
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+        assert!(!e.files[0].dirty);
+    }
+    #[test]
+    fn color_draft_does_not_discard_text_and_clear_is_intentional() {
+        let mut e = editor();
+        e.text = "note".into();
+        e.color_edit = Some(Some([1, 2, 3, 80]));
+        e.commit_draft();
+        assert_eq!(e.files[0].doc.targets()[0].text, "note");
+        assert_eq!(e.files[0].doc.targets()[0].color, Some([1, 2, 3, 80]));
+        e.color_edit = Some(None);
+        e.commit_draft();
+        assert_eq!(e.files[0].doc.targets()[0].color, None);
+    }
+    fn key(key: egui::Key, shift: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                command: true,
+                shift,
+                ..Default::default()
+            },
+        }
+    }
+    #[test]
+    fn headless_all_tabs_and_find_shortcut_focus() {
+        let ctx = egui::Context::default();
+        let mut e = editor();
         for tab in [Tab::UserData, Tab::Properties, Tab::Tags] {
-            editor.tab = tab;
+            e.tab = tab;
             let out = ctx.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(1000.0, 700.0),
+                        egui::vec2(1100., 750.),
                     )),
                     ..Default::default()
                 },
-                |ctx| editor.draw(ctx),
+                |ctx| e.draw(ctx),
             );
             assert!(!out.shapes.is_empty());
         }
-        editor.tab = Tab::UserData;
-        editor.text = "credits=Artist".into();
-        editor.stage(false);
-        let _ = ctx.run(Default::default(), |ctx| editor.draw(ctx));
-        assert_eq!(editor.preview.len(), 1);
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![key(egui::Key::H, false)],
+                ..Default::default()
+            },
+            |ctx| e.draw(ctx),
+        );
+        assert!(e.find_tab);
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("find-text"))
+        );
     }
     #[test]
-    fn shortcuts_use_event_modifiers_even_when_released_in_same_frame() {
+    fn ctrl_a_selects_files_only_outside_text() {
         let ctx = egui::Context::default();
-        let mut editor = Editor::default();
-        for name in ["one", "two", "three"] {
-            editor.add(name.into(), name.into(), fixture());
-        }
-        let _ = ctx.run(Default::default(), |ctx| editor.draw(ctx));
-        let input = egui::RawInput {
-            events: vec![
-                egui::Event::Key {
-                    key: egui::Key::A,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers {
-                        ctrl: true,
-                        command: true,
-                        ..Default::default()
-                    },
-                },
-                egui::Event::Key {
-                    key: egui::Key::A,
-                    physical_key: None,
-                    pressed: false,
-                    repeat: false,
-                    modifiers: Default::default(),
-                },
-            ],
-            ..Default::default()
-        };
-        let _ = ctx.run(input, |ctx| editor.draw(ctx));
-        assert_eq!(editor.selection.selected.len(), 3);
+        let mut e = editor();
+        let _ = ctx.run(Default::default(), |ctx| e.draw(ctx));
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![key(egui::Key::A, false)],
+                ..Default::default()
+            },
+            |ctx| e.draw(ctx),
+        );
+        assert_eq!(e.selection.selected.len(), 2);
+    }
+    #[test]
+    fn control_arrow_focus_does_not_change_editing_target() {
+        let mut e = editor();
+        e.files[0].doc.set_text(0, "selected").unwrap();
+        e.files[1].doc.set_text(0, "unselected").unwrap();
+        e.load_fields();
+        e.selection.step(1, true, false, &[0, 1]);
+        e.sync_fields();
+        assert_eq!(e.selection.focus, Some(1));
+        assert_eq!(e.loaded_focus, Some(0));
+        assert_eq!(e.text, "selected");
+        e.text = "edited selected".into();
+        e.commit_draft();
+        assert_eq!(e.files[0].doc.targets()[0].text, "edited selected");
+        assert_eq!(e.files[1].doc.targets()[0].text, "unselected");
+    }
+    #[test]
+    fn find_replace_respects_layer_scope() {
+        let mut bytes = fixture();
+        let mut body = vec![0; 16];
+        body.extend([1, 0, b'L']);
+        let size = (body.len() + 6) as u32;
+        bytes.extend(size.to_le_bytes());
+        bytes.extend(0x2004u16.to_le_bytes());
+        bytes.extend(body);
+        let len = bytes.len() as u32;
+        bytes[..4].copy_from_slice(&len.to_le_bytes());
+        bytes[128..132].copy_from_slice(&(len - 128).to_le_bytes());
+        bytes[134..136].copy_from_slice(&1u16.to_le_bytes());
+        let mut e = Editor::default();
+        e.add("layer.aseprite".into(), "layer.aseprite".into(), bytes);
+        e.sync_fields();
+        e.files[0].doc.set_text(0, "cat global").unwrap();
+        e.files[0].doc.set_text(1, "cat layer").unwrap();
+        e.target = 1;
+        e.sync_fields();
+        e.find = "cat".into();
+        e.replace = "dog".into();
+        assert_eq!(e.matches(), 1);
+        e.replace_all();
+        assert_eq!(e.files[0].doc.targets()[0].text, "cat global");
+        assert_eq!(e.files[0].doc.targets()[1].text, "dog layer");
     }
 }

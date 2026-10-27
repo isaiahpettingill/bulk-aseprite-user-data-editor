@@ -9,7 +9,8 @@ function harness() {
   const reads = [];
   let focused = 0;
   const canvas = {focus() { focused++; }};
-  const window = {addEventListener() {}};
+  const listeners = {};
+  const window = {addEventListener(type, listener) { listeners[type] = listener; }};
   const document = {
     createElement(tag) {
       assert.equal(tag, 'input');
@@ -23,7 +24,7 @@ function harness() {
     window, document, Uint8Array, Blob, URL, setTimeout, console
   });
   return {
-    window, inputs, reads,
+    window, inputs, reads, listeners,
     focused: () => focused,
     file(name, {relative = '', bytes = [1, 2, 3], size = bytes.length, error} = {}) {
       return {name, webkitRelativePath: relative, size, async arrayBuffer() {
@@ -141,4 +142,21 @@ test('unsafe paths are rejected before arrayBuffer', async () => {
   await h.pick([h.file('bad.ase', {relative: '../bad.ase'}), h.file('bad.ase', {relative: 'C:/bad.ase'})], true);
   assert.deepEqual(h.reads, []);
   assert.equal(h.poll().filter(f => /unsafe/.test(f.error)).length, 2);
+});
+
+
+test('editor shortcuts prevent browser defaults without stealing ordinary text/select-all', () => {
+  const h = harness();
+  for (const key of ['s', 'S', 'f', 'F', 'h', 'H']) {
+    for (const modifier of ['ctrlKey', 'metaKey']) {
+      let prevented = false;
+      h.listeners.keydown({key, [modifier]: true, preventDefault() { prevented = true; }});
+      assert.equal(prevented, true, `${modifier}+${key} should use the editor shortcut`);
+    }
+  }
+  for (const event of [{key: 'f'}, {key: 'h'}, {key: 'a', ctrlKey: true}, {key: 'a', metaKey: true}]) {
+    let prevented = false;
+    h.listeners.keydown({...event, preventDefault() { prevented = true; }});
+    assert.equal(prevented, false, `Do not intercept ${JSON.stringify(event)}`);
+  }
 });

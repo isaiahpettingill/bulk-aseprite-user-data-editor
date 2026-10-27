@@ -70,7 +70,7 @@ window.editorDownload=(name,data)=>{
 let hasUnsavedEdits=false;
 window.editorDirty=(dirty)=>{hasUnsavedEdits=dirty;};
 window.addEventListener('beforeunload',event=>{if(hasUnsavedEdits){event.preventDefault();event.returnValue='';}});
-window.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();});
+window.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&['s','f','h'].includes(event.key.toLowerCase()))event.preventDefault();});
 
 window.editorStatus={files:0,selected:0,ready:false};
 window.editorReport=(files,selected)=>{window.editorStatus={files,selected,ready:true};};
