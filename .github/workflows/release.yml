@@ -2,11 +2,42 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
   workflow_dispatch:
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.version.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid package version'; exit 1; }
+          TAG="v$VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$TAG" ]]; then
+            echo 'Release tag must match Cargo.toml'; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" --jq ".[] | select(.ref==\"refs/tags/$TAG\") | .object.sha")
+          if [[ -n "$EXISTING" && "$GITHUB_REF" == refs/heads/main ]]; then
+            echo "Version $TAG already has a tag; bump Cargo.toml for the next release."
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+          fi
   linux:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -22,6 +53,8 @@ jobs:
           name: linux
           path: dist/*
   windows:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -46,8 +79,8 @@ jobs:
             packaging/*-setup.exe
             packaging/SHA256SUMS-windows.txt
   publish:
-    needs: [linux, windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [plan, linux, windows]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -60,10 +93,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
         run: |
+          EXISTING=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG" --jq ".[] | select(.ref==\"refs/tags/$RELEASE_TAG\") | .object.sha")
+          if [[ -n "$EXISTING" ]]; then
+            TARGET=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+            [[ "$TARGET" == "$GITHUB_SHA" ]] || { echo 'Existing tag belongs to another commit; refusing to replace it'; exit 1; }
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" artifacts/* --clobber
           else
-            gh release create "$RELEASE_TAG" artifacts/* --verify-tag --title "$RELEASE_TAG" --notes 'Aseprite Metadata Editor desktop builds. The Windows installer is unsigned; Windows may show a publisher warning. Linux requires x86_64, glibc 2.35 or newer and working system graphics drivers. Source and BSD-3-Clause license are available in this repository.'
+            gh release create "$RELEASE_TAG" artifacts/* --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes 'Aseprite Metadata Editor desktop builds. The Windows installer is unsigned; Windows may show a publisher warning. Linux requires x86_64, glibc 2.35 or newer and working system graphics drivers. Source and BSD-3-Clause license are available in this repository.'
           fi

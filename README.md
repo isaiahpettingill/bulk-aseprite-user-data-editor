@@ -56,10 +56,13 @@ File processing stays on the device. No server receives your sprite files.
 - CI checks Linux, Windows and the WebAssembly build on pull requests.
 - `main` publishes the web build through GitHub Pages. In repository Settings →
   Pages, select **GitHub Actions** as the source before the first deployment.
-- Pushing a `v*` tag builds and publishes desktop assets after tests pass.
-  A manual Release workflow run builds downloadable workflow artifacts without
-  publishing a release unless run against a version tag.
-- Windows: per-user NSIS installer, no administrator access required. Installers
+- A merge to `main` publishes desktop assets when the Cargo package version has
+  no existing tag. Bump that version for a new release; unchanged versions are
+  skipped. Existing tags pointing elsewhere are never replaced. Version-tag and
+  manual builds remain supported; manual non-main branch builds produce artifacts
+  without publishing.
+- Windows: per-user NSIS installer, no administrator access required. The installer includes a destination-folder chooser and defaults to your
+  local application-data directory; choose a writable folder. Installers
   are **unsigned** and may trigger Windows SmartScreen/publisher warnings.
 - Linux: x86_64 AppImage built on Ubuntu 22.04 (glibc ≥ 2.35), requiring working
   graphics drivers. Run `chmod +x *.AppImage`, then open it. Without FUSE, launch
