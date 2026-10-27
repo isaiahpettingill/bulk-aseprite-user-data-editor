@@ -16,6 +16,7 @@ window.editorOpen = function(directory) {
         incoming.push({error:path+': '+(error.message || 'Could not read file')});
       }
     }
+    document.getElementById("editor")?.focus();
   }; input.click();
 };
 window.editorPoll=()=>incoming.splice(0);
