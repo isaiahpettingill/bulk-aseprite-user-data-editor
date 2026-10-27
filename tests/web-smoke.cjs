@@ -14,7 +14,7 @@ for (const name of ['one', 'two', 'three']) fs.writeFileSync(`test-fixtures/${na
   page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
   try {
     await page.goto('http://127.0.0.1:8774');
-    await page.waitForFunction(() => window.editorStatus !== undefined);
+    await page.waitForFunction(() => window.editorStatus?.ready === true);
     await page.waitForTimeout(500);
     await page.screenshot({path: 'web-empty.png'});
     const chooser = page.waitForEvent('filechooser');
