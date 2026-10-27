@@ -24,6 +24,8 @@ window.editorOpen = function(directory) {
   pickerEvent('open');
   const input = document.createElement('input');
   input.type = 'file';
+  input.hidden = true;
+  document.body.appendChild(input);
   input.multiple = true;
   input.accept = '.ase,.aseprite';
   if (directory) input.webkitdirectory = true;
@@ -31,6 +33,7 @@ window.editorOpen = function(directory) {
   pickerOpen = true;
   const finish = () => {
     pickerEvent('finish');
+    input.remove();
     pickerOpen = false;
     document.getElementById('editor')?.focus();
   };

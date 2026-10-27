@@ -12,9 +12,10 @@ function harness() {
   const listeners = {};
   const window = {addEventListener(type, listener) { listeners[type] = listener; }};
   const document = {
+    body: {appendChild(input) { input.connected = true; }},
     createElement(tag) {
       assert.equal(tag, 'input');
-      const input = {files: [], click() { this.clicked = true; }, addEventListener(type, fn) { this[`on${type}`] = fn; }};
+      const input = {files: [], remove() { this.connected = false; }, click() { this.clicked = true; }, addEventListener(type, fn) { this[`on${type}`] = fn; }};
       inputs.push(input);
       return input;
     },
@@ -53,6 +54,7 @@ test('Open files creates a multi-file Aseprite picker, not a directory picker', 
   assert.equal(input.accept, '.ase,.aseprite');
   assert.equal(Boolean(input.webkitdirectory), false);
   assert.equal(input.clicked, true);
+  assert.equal(input.connected, true);
 });
 
 test('extension filtering is case-insensitive and occurs before reading bytes', async () => {
