@@ -107,6 +107,7 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     // that return before starting a new platform dialog.
     await page.waitForFunction(() => window.editorPickerBusy?.() === false && document.activeElement?.id === 'editor');
     await renderInput();
+    console.log('Before reopen', JSON.stringify(await page.evaluate(() => ({openCalls:window.editorOpenCalls, events:window.editorPickerEvents, input:window.editorInput}))));
     const cancelChooser = page.waitForEvent('filechooser');
     await page.mouse.click(40, 15);
     const cancelled = await cancelChooser;
@@ -207,7 +208,7 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     if (errors.length) throw new Error(errors.join('\n'));
     console.log('Web startup, primary multi-file picker, extension filtering, cancel, duplicate import and keyboard selection passed');
   } catch (error) {
-    console.log('Runtime state:', await page.evaluate(() => ({status: window.editorStatus, focus: document.activeElement?.id, pickerBusy: window.editorPickerBusy?.(), openCalls: window.editorOpenCalls, input: window.editorInput, ui: window.editorUi})), errors);
+    console.log('Runtime state:', JSON.stringify(await page.evaluate(() => ({status: window.editorStatus, focus: document.activeElement?.id, pickerBusy: window.editorPickerBusy?.(), openCalls: window.editorOpenCalls, input: window.editorInput, pickerEvents: window.editorPickerEvents, ui: window.editorUi}))), errors);
     await page.screenshot({path: 'web-failure.png'});
     throw error;
   } finally { await browser.close(); }

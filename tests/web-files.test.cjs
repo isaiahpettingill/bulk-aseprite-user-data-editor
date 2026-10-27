@@ -21,7 +21,7 @@ function harness() {
     getElementById(id) { return id === 'editor' ? canvas : null; }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../web/files.js'), 'utf8'), {
-    window, document, Uint8Array, Blob, URL, setTimeout, console
+    window, document, navigator: {}, Uint8Array, Blob, URL, setTimeout, console
   });
   return {
     window, inputs, reads, listeners,

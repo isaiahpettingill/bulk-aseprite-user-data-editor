@@ -16,9 +16,12 @@ function availableName(path) {
   return candidate;
 }
 window.editorOpenCalls = 0;
+window.editorPickerEvents = [];
+const pickerEvent = type => { window.editorPickerEvents.push({type, active: navigator.userActivation?.isActive}); if (window.editorPickerEvents.length > 20) window.editorPickerEvents.shift(); };
 window.editorOpen = function(directory) {
   window.editorOpenCalls++;
-  if (pickerOpen) return;
+  if (pickerOpen) { pickerEvent('busy'); return; }
+  pickerEvent('open');
   const input = document.createElement('input');
   input.type = 'file';
   input.multiple = true;
@@ -27,11 +30,13 @@ window.editorOpen = function(directory) {
   // Imports are additive: existing documents and unsaved edits are never replaced.
   pickerOpen = true;
   const finish = () => {
+    pickerEvent('finish');
     pickerOpen = false;
     document.getElementById('editor')?.focus();
   };
-  input.oncancel = finish;
+  input.oncancel = () => { pickerEvent('cancel'); finish(); };
   input.onchange = async () => {
+    pickerEvent('change');
     let total = 0, count = 0, skipped = 0, renamed = 0;
     try {
       for (const file of input.files) {
