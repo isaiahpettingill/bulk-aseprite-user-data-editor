@@ -1021,13 +1021,22 @@ fn report_widget(name: &str, response: &egui::Response) {
         a.push(&(p.x as f64).into());
         a.push(&(p.y as f64).into());
         let _ = js_sys::Reflect::set(&o, &name.into(), &a);
-        if name == "find" {
-            let _ = js_sys::Reflect::set(&o, &"findFocused".into(), &response.has_focus().into());
-        }
+        let _ = js_sys::Reflect::set(
+            &o,
+            &format!("{name}Focused").into(),
+            &response.has_focus().into(),
+        );
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn report_widget(_: &str, _: &egui::Response) {}
+fn report_widget(name: &str, response: &egui::Response) {
+    #[cfg(test)]
+    response
+        .ctx
+        .data_mut(|d| d.insert_temp(egui::Id::new(format!("test-rect-{name}")), response.rect));
+    #[cfg(not(test))]
+    let _ = (name, response);
+}
 impl eframe::App for Editor {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.draw(ctx);
@@ -1274,5 +1283,59 @@ mod app_tests {
         e.replace_all();
         assert_eq!(e.files[0].doc.targets()[0].text, "cat global");
         assert_eq!(e.files[0].doc.targets()[1].text, "dog layer");
+    }
+    #[test]
+    fn focused_replace_text_is_used_by_following_action_frame() {
+        let ctx = egui::Context::default();
+        let mut e = editor();
+        e.text = "Original".into();
+        e.commit_draft();
+        e.find_tab = true;
+        e.find = "Original".into();
+        let frame = |events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100., 750.),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(frame(vec![]), |ctx| e.draw(ctx));
+        let replace = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("test-rect-replace")))
+            .unwrap()
+            .center();
+        let click = |p| {
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+        let _ = ctx.run(frame(click(replace)), |ctx| e.draw(ctx));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("replace-text"))
+        );
+        let _ = ctx.run(frame(vec![egui::Event::Text("Updated".into())]), |ctx| {
+            e.draw(ctx)
+        });
+        assert_eq!(e.replace, "Updated");
+        let button = ctx
+            .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("test-rect-replace_all")))
+            .unwrap()
+            .center();
+        let _ = ctx.run(frame(click(button)), |ctx| e.draw(ctx));
+        assert_eq!(e.files[0].doc.targets()[0].text, "Updated");
     }
 }

@@ -121,10 +121,18 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await page.waitForTimeout(300);
     if (await page.evaluate(() => window.editorStatus.selected) !== 1) throw new Error('Ctrl+arrow unexpectedly changed selection');
     await page.screenshot({path: 'web-loaded.png'});
+    // Canvas controls apply focus and text events on animation frames, unlike DOM inputs.
+    const renderInput = () => page.evaluate(() => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
     const clickControl = async name => {
       await page.waitForFunction(key => Array.isArray(window.editorUi?.[key]), name);
       const [x, y] = await page.evaluate(key => window.editorUi[key], name);
       await page.mouse.click(x, y);
+      await renderInput();
+      if (['text', 'find', 'replace'].includes(name)) {
+        await page.waitForFunction(key => window.editorUi?.[key + 'Focused'] === true, name);
+      }
     };
     const saveArchive = async () => {
       const download = page.waitForEvent('download');
@@ -145,6 +153,7 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await clickControl('text');
     await page.keyboard.press('Control+a');
     await page.keyboard.type('credits=Tester');
+    await renderInput();
     const single = await saveArchive();
     assert.deepEqual(single, {'one.aseprite': 'credits=Tester'});
     // Bulk append uses the same Ctrl+S path, with no mandatory preview/apply click.
@@ -154,6 +163,7 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await clickControl('text');
     await page.keyboard.press('Control+a');
     await page.keyboard.type('license=CC0');
+    await renderInput();
     const bulk = await saveArchive();
     assertAppendOnce(bulk);
     assert.equal(bulk['one.aseprite'], 'credits=Tester\nlicense=CC0');
@@ -167,9 +177,11 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await page.waitForFunction(() => window.editorUi?.findTab && window.editorUi?.findFocused);
     await page.keyboard.press('Control+a');
     await page.keyboard.type('Original');
+    await renderInput();
     await page.waitForFunction(() => window.editorUi?.matches === 3);
     await clickControl('replace');
     await page.keyboard.type('Updated');
+    await renderInput();
     await clickControl('replace_all');
     await page.waitForFunction(() => window.editorUi?.matches === 0);
     const replaced = await saveArchive();
@@ -182,6 +194,7 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await page.waitForFunction(() => window.editorUi?.findTab && window.editorUi?.findFocused);
     await page.keyboard.press('Control+a');
     await page.keyboard.type('Tester');
+    await renderInput();
     await page.waitForFunction(() => window.editorUi?.matches === 1);
     await page.screenshot({path: 'web-find-replace.png'});
     console.log('Direct Ctrl+S export, single edit, append idempotency and selected-files Ctrl+F/H replacement passed');
