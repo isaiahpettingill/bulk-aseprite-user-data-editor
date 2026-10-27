@@ -56,6 +56,7 @@ pub struct Editor {
     confirm_close: bool,
     allow_close: bool,
     pending_input: Vec<egui::Event>,
+    open_clicks: u64,
 }
 impl Editor {
     // egui TextEdit can lose text when a focus-changing pointer event is
@@ -88,6 +89,7 @@ impl Editor {
             self.pending_input = events.split_off(i);
             ctx.request_repaint();
         }
+        report_input(&events, self.pending_input.len(), input.focused);
         input.events = events;
     }
     fn add(&mut self, name: String, path: PathBuf, bytes: Vec<u8>) {
@@ -123,6 +125,7 @@ impl Editor {
         }
     }
     fn open(&mut self, directory: bool) {
+        self.open_clicks += 1;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let paths = if directory {
@@ -559,7 +562,10 @@ impl Editor {
         }
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Open files").clicked() {
+                let open = ui.button("Open files");
+                report_widget("openFiles", &open);
+                report_counter("openClicks", self.open_clicks);
+                if open.clicked() {
                     self.open(false);
                 }
                 if ui.button("Open folder").clicked() {
@@ -1040,6 +1046,52 @@ impl Editor {
             });
     }
 }
+#[cfg(target_arch = "wasm32")]
+fn report_input(events: &[egui::Event], pending: usize, focused: bool) {
+    if events.is_empty() && pending == 0 {
+        return;
+    }
+    let global = js_sys::global();
+    let history = js_sys::Reflect::get(&global, &"editorInput".into())
+        .ok()
+        .filter(js_sys::Array::is_array)
+        .map(|v| js_sys::Array::from(&v))
+        .unwrap_or_default();
+    let o = js_sys::Object::new();
+    let kinds = js_sys::Array::new();
+    for event in events.iter().take(32) {
+        let kind = match event {
+            egui::Event::Text(_) => "text",
+            egui::Event::Paste(_) => "paste",
+            egui::Event::PointerButton { pressed: true, .. } => "pointerDown",
+            egui::Event::PointerButton { pressed: false, .. } => "pointerUp",
+            egui::Event::PointerMoved(_) => "pointerMove",
+            egui::Event::Key { pressed: true, .. } => "keyDown",
+            egui::Event::Key { pressed: false, .. } => "keyUp",
+            egui::Event::Ime(_) => "ime",
+            _ => "other",
+        };
+        kinds.push(&kind.into());
+    }
+    let _ = js_sys::Reflect::set(&o, &"events".into(), &kinds);
+    let _ = js_sys::Reflect::set(&o, &"pending".into(), &(pending as f64).into());
+    let _ = js_sys::Reflect::set(&o, &"focused".into(), &focused.into());
+    history.push(&o);
+    while history.length() > 16 {
+        history.shift();
+    }
+    let _ = js_sys::Reflect::set(&global, &"editorInput".into(), &history);
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn report_input(_: &[egui::Event], _: usize, _: bool) {}
+#[cfg(target_arch = "wasm32")]
+fn report_counter(name: &str, value: u64) {
+    if let Ok(o) = js_sys::Reflect::get(&js_sys::global(), &"editorUi".into()) {
+        let _ = js_sys::Reflect::set(&o, &name.into(), &(value as f64).into());
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn report_counter(_: &str, _: u64) {}
 // Geometry-only diagnostics for automated browser interaction; no file data.
 #[cfg(target_arch = "wasm32")]
 fn report_state(find_tab: bool, matches: usize) {
@@ -1458,5 +1510,34 @@ mod app_tests {
         assert_eq!(input.events.len(), 3);
         assert!(matches!(&input.events[0],egui::Event::Text(t) if t=="first"));
         assert!(matches!(&input.events[1],egui::Event::Paste(t) if t=="second"));
+    }
+    #[test]
+    fn picker_pointer_batches_are_not_deferred() {
+        let ctx = egui::Context::default();
+        let mut e = Editor::default();
+        for _ in 0..2 {
+            let events = vec![
+                egui::Event::PointerMoved(egui::pos2(40., 15.)),
+                egui::Event::PointerButton {
+                    pos: egui::pos2(40., 15.),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: egui::pos2(40., 15.),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ];
+            let mut input = egui::RawInput {
+                events: events.clone(),
+                ..Default::default()
+            };
+            e.prepare_input(&ctx, &mut input);
+            assert!(e.pending_input.is_empty());
+            assert_eq!(input.events, events);
+        }
     }
 }

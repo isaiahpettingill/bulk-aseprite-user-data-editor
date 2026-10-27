@@ -15,7 +15,9 @@ function availableName(path) {
   }
   return candidate;
 }
+window.editorOpenCalls = 0;
 window.editorOpen = function(directory) {
+  window.editorOpenCalls++;
   if (pickerOpen) return;
   const input = document.createElement('input');
   input.type = 'file';

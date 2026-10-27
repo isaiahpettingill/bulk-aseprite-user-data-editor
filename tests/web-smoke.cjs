@@ -207,7 +207,7 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     if (errors.length) throw new Error(errors.join('\n'));
     console.log('Web startup, primary multi-file picker, extension filtering, cancel, duplicate import and keyboard selection passed');
   } catch (error) {
-    console.log('Runtime state:', await page.evaluate(() => ({status: window.editorStatus, focus: document.activeElement?.tagName})), errors);
+    console.log('Runtime state:', await page.evaluate(() => ({status: window.editorStatus, focus: document.activeElement?.id, pickerBusy: window.editorPickerBusy?.(), openCalls: window.editorOpenCalls, input: window.editorInput, ui: window.editorUi})), errors);
     await page.screenshot({path: 'web-failure.png'});
     throw error;
   } finally { await browser.close(); }
