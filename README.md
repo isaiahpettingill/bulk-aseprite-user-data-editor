@@ -23,7 +23,12 @@ property encodings are preserved rather than guessed. Unknown chunks and image
 payloads remain unchanged. Malformed files are rejected, not silently repaired.
 Use the Tags tab for bulk find/replace in tag names or individual tag edits.
 
-The web version imports files/folders into the browser tab and downloads edited
+The web version starts with **Open files**: select one or more `.ase` / `.aseprite`
+files. Only matching files are read locally; nothing is uploaded to a server.
+**Open folder** remains optional and filters before reading file contents.
+Opening adds files without replacing existing edits; cancelling changes nothing.
+Same-name files receive numbered names, so ZIP entries never overwrite one another.
+The web version downloads edited
 files as a ZIP, keeping relative paths. **It does not overwrite original files or
 write directly to a directory.** Folder picking depends on browser support;
 individual-file picking is the fallback. Download your edits before closing the

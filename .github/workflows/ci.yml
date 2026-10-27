@@ -62,6 +62,8 @@ jobs:
         with:
           name: web-preview
           path: dist
+      - name: Browser file-picker unit tests
+        run: node --test tests/web-files.test.cjs
       - name: Browser smoke test
         run: |
           trunk build --release --public-url /

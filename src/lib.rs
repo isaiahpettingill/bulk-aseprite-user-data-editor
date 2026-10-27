@@ -310,6 +310,12 @@ impl Editor {
             io::dirty(self.files.iter().any(|f| f.dirty) || !self.preview.is_empty());
             use wasm_bindgen::JsValue;
             for item in io::poll().iter() {
+                if let Ok(message) = js_sys::Reflect::get(&item, &JsValue::from_str("status")) {
+                    if let Some(message) = message.as_string() {
+                        self.status = message;
+                        continue;
+                    }
+                }
                 if let Ok(err) = js_sys::Reflect::get(&item, &JsValue::from_str("error")) {
                     if let Some(e) = err.as_string() {
                         self.error_files.push(e);
@@ -332,11 +338,11 @@ impl Editor {
         }
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Open folder").clicked() {
-                    self.open(true);
-                }
                 if ui.button("Open files").clicked() {
                     self.open(false);
+                }
+                if ui.button("Open folder").clicked() {
+                    self.open(true);
                 }
                 if ui
                     .add_enabled(
@@ -417,18 +423,25 @@ impl Editor {
                         ui.horizontal(|ui| {
                             ui.add_space(parts.len().saturating_sub(1) as f32 * 12.0);
                             let label = format!(
-                                "{}{}{}",
-                                if self.selection.focus == Some(i) {
-                                    "› "
-                                } else {
-                                    ""
-                                },
+                                "{}{}",
                                 parts.last().unwrap_or(&""),
                                 if f.dirty { " •" } else { "" }
                             );
                             let response = ui
                                 .selectable_label(self.selection.selected.contains(&i), label)
                                 .on_hover_text(&f.name);
+                            // Ctrl+arrow can focus an unselected row. Keep that keyboard
+                            // location visible without adding a selection chevron.
+                            if self.selection.focus == Some(i)
+                                && !self.selection.selected.contains(&i)
+                            {
+                                ui.painter().rect_stroke(
+                                    response.rect,
+                                    2.0,
+                                    ui.visuals().selection.stroke,
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                             if response.clicked() {
                                 chosen = Some((
                                     i,
@@ -512,7 +525,7 @@ impl Editor {
             }
         });
         egui::CentralPanel::default().show(ctx,|ui|{
-   if self.files.is_empty(){ui.centered_and_justified(|ui|{ui.label("Open a folder or Aseprite file");});return;}
+   if self.files.is_empty(){ui.centered_and_justified(|ui|{ui.label("Open .ase or .aseprite files");});return;}
    if self.selection.selected.is_empty(){ui.label("Select files to edit");return;}
    ui.horizontal(|ui|{if ui.selectable_value(&mut self.tab,Tab::UserData,"User data").changed(){self.preview.clear();}
 if ui.selectable_value(&mut self.tab,Tab::Properties,"Properties").changed(){self.preview.clear();}
