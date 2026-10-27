@@ -55,6 +55,9 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
 (async () => {
   const browser = await chromium.launch({headless: true, args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']});
   const page = await browser.newPage({viewport: {width: 1100, height: 750}});
+  // Keep CDP interception subscribed across repeated native pickers. Removing the
+  // sole one-shot listener toggles it asynchronously and Chromium may auto-cancel.
+  page.on('filechooser', () => {});
   await page.addInitScript(() => {
     window.readFileNames = [];
     const read = File.prototype.arrayBuffer;
