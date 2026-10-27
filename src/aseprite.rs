@@ -5,6 +5,11 @@
 //! https://github.com/aseprite/aseprite/blob/main/src/dio/aseprite_decoder.cpp
 //! https://github.com/LibreSprite/LibreSprite/blob/master/src/app/file/ase_format.cpp
 //! The tests also decode edited files with the independent MIT asefile crate.
+use aseprite_loader::binary::chunks::{
+    layer::parse_layer_chunk,
+    tags::{parse_tags_chunk, AnimationDirection},
+    user_data::parse_user_data_chunk,
+};
 use serde_json::{json, Value};
 type Result<T> = std::result::Result<T, String>;
 const MAX_FILE: usize = 256 * 1024 * 1024;
@@ -229,9 +234,14 @@ impl Document {
             for c in self.frames[fi].chunks.clone() {
                 match c.kind {
                     0x2004 => {
-                        let mut r = Reader::new(&c.data);
-                        r.take(16)?;
-                        let name = r.string()?;
+                        // The library reads the name/type; we retain raw flags and
+                        // all bytes (its layer flag model is not used for writing).
+                        if c.data.len() < 18 {
+                            return Err("Truncated layer".into());
+                        }
+                        let (_, parsed) = parse_layer_chunk(&c.data)
+                            .map_err(|e| format!("Invalid layer: {e:?}"))?;
+                        let name = parsed.name;
                         current = Some(self.add_target(
                             Scope::Layer,
                             format!("Layer {}: {}", layer + 1, name),
@@ -257,22 +267,32 @@ impl Document {
                         queue.clear();
                     }
                     0x2018 => {
-                        let mut r = Reader::new(&c.data);
-                        let n = r.u16()? as usize;
+                        let n = u16at(&c.data, 0)? as usize;
                         if self.targets.len() + n > MAX_ITEMS {
                             return Err("Too many metadata targets".into());
                         }
-                        r.take(8)?;
+                        // Each tag needs 17 fixed bytes and a two-byte string length.
+                        // Bound count before the library allocates its result vector.
+                        if c.data.len() < 10 || n > (c.data.len() - 10) / 19 {
+                            return Err("Truncated tags".into());
+                        }
+                        let (_, parsed) = parse_tags_chunk(&c.data)
+                            .map_err(|e| format!("Invalid tags: {e:?}"))?;
                         queue.clear();
-                        for ordinal in 0..n {
-                            let from = r.u16()?;
-                            let to = r.u16()?;
-                            let direction = r.u8()?;
-                            let repeat = r.u16()?;
-                            r.take(6)?;
-                            let color = r.take(3)?.try_into().unwrap();
-                            r.take(1)?;
-                            let name = r.string()?;
+                        for (ordinal, parsed_tag) in parsed.tags.into_iter().enumerate() {
+                            let from = *parsed_tag.frames.start();
+                            let to = *parsed_tag.frames.end();
+                            let direction = match parsed_tag.animation_direction {
+                                AnimationDirection::Forward => 0,
+                                AnimationDirection::Reverse => 1,
+                                AnimationDirection::PingPong => 2,
+                                AnimationDirection::PingPongReverse => 3,
+                                AnimationDirection::Unknown(value) => value,
+                            };
+                            let repeat = parsed_tag.animation_repeat;
+                            #[allow(deprecated)]
+                            let color = parsed_tag.color;
+                            let name = parsed_tag.name.to_owned();
                             let id = self.tags.len();
                             self.tags.push(Tag {
                                 id,
@@ -394,19 +414,8 @@ impl Document {
         if flags & !7 != 0 {
             return Err("Future user-data flags: read-only".into());
         }
-        let mut r = Reader::new(&original);
-        r.take(4)?;
-        let old_text = if flags & 1 != 0 {
-            Some(r.string()?)
-        } else {
-            None
-        };
-        let old_color = if flags & 2 != 0 {
-            Some(r.take(4)?.try_into().unwrap())
-        } else {
-            None
-        };
-        let tail = &original[r.pos..];
+        let (old_text, old_color, prefix_len) = read_user_prefix(&original)?;
+        let tail = &original[prefix_len..];
         let new_text = text.map(str::to_owned).or(old_text);
         let new_color = color.unwrap_or(old_color);
         let mut f = flags & 4;
@@ -629,26 +638,45 @@ impl Document {
     }
 }
 type UserFields = (String, Option<[u8; 4]>, Option<Value>, Option<String>);
-fn read_user(b: &[u8]) -> Result<UserFields> {
+// Isolate the library's supported text/color prefix from typed-property data.
+// This prevents its known nested-map/short-size paths from being entered, while
+// genuinely delegating the metadata interpretation and UTF-8 validation.
+type UserPrefix = (Option<String>, Option<[u8; 4]>, usize);
+fn read_user_prefix(b: &[u8]) -> Result<UserPrefix> {
     let mut r = Reader::new(b);
     let flags = r.u32()?;
-    let text = if flags & 1 != 0 {
-        r.string()?
-    } else {
-        String::new()
-    };
-    let color = if flags & 2 != 0 {
-        Some(r.take(4)?.try_into().unwrap())
-    } else {
-        None
-    };
+    if flags & 1 != 0 {
+        let len = r.u16()? as usize;
+        r.take(len)?;
+    }
+    if flags & 2 != 0 {
+        r.take(4)?;
+    }
+    let end = r.pos;
+    let mut prefix = b[..end].to_vec();
+    prefix[..4].copy_from_slice(&(flags & 3).to_le_bytes());
+    let (remaining, parsed) =
+        parse_user_data_chunk(&prefix).map_err(|e| format!("Invalid user data: {e:?}"))?;
+    if !remaining.is_empty() {
+        return Err("Unexpected user-data prefix bytes".into());
+    }
+    Ok((
+        parsed.text.map(str::to_owned),
+        parsed.color.map(|c| [c.red, c.green, c.blue, c.alpha]),
+        end,
+    ))
+}
+fn read_user(b: &[u8]) -> Result<UserFields> {
+    let flags = u32at(b, 0)?;
+    let (text, color, prefix_len) = read_user_prefix(b)?;
+    let text = text.unwrap_or_default();
     let mut warning = if flags & !7 != 0 {
         Some("Future user-data flags; read-only".into())
     } else {
         None
     };
     let properties = if flags & 4 != 0 {
-        match read_maps(&b[r.pos..]) {
+        match read_maps(&b[prefix_len..]) {
             Ok(v) => Some(v),
             Err(e) => {
                 warning = Some(format!("Properties preserved read-only: {e}"));
@@ -1105,5 +1133,31 @@ mod tests {
         assert!(d.set_color(0, Some([1, 2, 3, 4])).is_err());
         assert!(d.set_properties(0, &json!({"maps":[]})).is_err());
         assert_eq!(d.encode().unwrap(), bytes);
+    }
+    #[test]
+    fn library_metadata_preflight_rejects_truncation() {
+        let mut userdata = user("éclair");
+        userdata[0] = 3;
+        userdata.extend([1, 2, 3, 4]);
+        for (kind, body) in [(0x2004, layer()), (0x2018, tags()), (0x2020, userdata)] {
+            for end in 0..body.len() {
+                let bytes = fixture(vec![(kind, body[..end].to_vec())]);
+                assert!(Document::parse(&bytes).is_err(), "kind={kind:x}, len={end}");
+            }
+        }
+        let mut excessive = vec![255, 255];
+        excessive.extend([0; 8]);
+        assert!(Document::parse(&fixture(vec![(0x2018, excessive)])).is_err());
+    }
+    #[test]
+    fn library_prefix_does_not_enter_unsupported_property_parser() {
+        let mut data = vec![4, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0];
+        let mut d = Document::parse(&fixture(vec![(0x2020, data.clone())])).unwrap();
+        assert!(d.targets()[0].warning.is_some());
+        d.set_text(0, "note").unwrap();
+        assert!(d.encode().unwrap().windows(8).any(|w| w == &data[4..]));
+        data[0] = 8;
+        let mut future = Document::parse(&fixture(vec![(0x2020, data)])).unwrap();
+        assert!(future.set_text(0, "no").is_err());
     }
 }

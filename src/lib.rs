@@ -62,14 +62,19 @@ impl Editor {
             return;
         }
         match Document::parse(&bytes) {
-            Ok(doc) => self.files.push(File {
-                name,
-                path,
-                original: bytes,
-                doc,
-                dirty: false,
-                undo: vec![],
-            }),
+            Ok(doc) => {
+                self.files.push(File {
+                    name,
+                    path,
+                    original: bytes,
+                    doc,
+                    dirty: false,
+                    undo: vec![],
+                });
+                if self.selection.focus.is_none() {
+                    self.selection.choose(0, false, false, &[0]);
+                }
+            }
             Err(e) => self.error_files.push(format!("{name}: {e}")),
         }
     }
@@ -465,34 +470,37 @@ impl Editor {
         let editing = ctx
             .memory(|m| m.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-        ctx.input(|input| {
-            if input.modifiers.command && input.key_pressed(egui::Key::S) {
+        let key_events = ctx.input(|input| input.events.clone());
+        for event in key_events {
+            let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            let command = modifiers.command || modifiers.ctrl;
+            if command && key == egui::Key::S {
                 self.save();
             }
-            if !editing {
-                if input.modifiers.command && input.key_pressed(egui::Key::A) {
-                    self.selection.selected.extend(visible.iter().copied());
-                }
-                if input.modifiers.command && input.key_pressed(egui::Key::Z) {
-                    self.undo();
-                }
-                for (key, delta) in [(egui::Key::ArrowUp, -1), (egui::Key::ArrowDown, 1)] {
-                    if input.key_pressed(key) {
-                        self.selection.step(
-                            delta,
-                            input.modifiers.ctrl || input.modifiers.command,
-                            input.modifiers.shift,
-                            &visible,
-                        );
-                    }
-                }
-                if input.key_pressed(egui::Key::Space) {
+            if editing {
+                continue;
+            }
+            match key {
+                egui::Key::A if command => self.selection.selected.extend(visible.iter().copied()),
+                egui::Key::Z if command => self.undo(),
+                egui::Key::ArrowUp => self.selection.step(-1, command, modifiers.shift, &visible),
+                egui::Key::ArrowDown => self.selection.step(1, command, modifiers.shift, &visible),
+                egui::Key::Space => {
                     if let Some(i) = self.selection.focus {
                         self.selection.choose(i, true, false, &visible);
                     }
                 }
+                _ => {}
             }
-        });
+        }
         if previous_selection != self.selection.selected {
             self.preview.clear();
         }
@@ -685,5 +693,39 @@ mod app_tests {
         editor.stage(false);
         let _ = ctx.run(Default::default(), |ctx| editor.draw(ctx));
         assert_eq!(editor.preview.len(), 1);
+    }
+    #[test]
+    fn shortcuts_use_event_modifiers_even_when_released_in_same_frame() {
+        let ctx = egui::Context::default();
+        let mut editor = Editor::default();
+        for name in ["one", "two", "three"] {
+            editor.add(name.into(), name.into(), fixture());
+        }
+        let _ = ctx.run(Default::default(), |ctx| editor.draw(ctx));
+        let input = egui::RawInput {
+            events: vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        ctrl: true,
+                        command: true,
+                        ..Default::default()
+                    },
+                },
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| editor.draw(ctx));
+        assert_eq!(editor.selection.selected.len(), 3);
     }
 }
