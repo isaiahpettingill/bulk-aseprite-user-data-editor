@@ -100,6 +100,10 @@ pub fn save(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), String> {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(js_name = editorReport)]
+    pub fn report(files: usize, selected: usize);
+    #[wasm_bindgen(js_name = editorDirty)]
+    pub fn dirty(dirty: bool);
     #[wasm_bindgen(js_name = editorOpen)]
     pub fn open(directory: bool);
     #[wasm_bindgen(js_name = editorPoll)]

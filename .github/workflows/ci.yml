@@ -42,3 +42,17 @@ jobs:
         with:
           name: web-preview
           path: dist
+      - name: Browser smoke test
+        run: |
+          trunk build --release --public-url /
+          npm install --no-save --ignore-scripts playwright@1.56.1
+          npx playwright install --with-deps chromium
+          python3 -m http.server 8774 --directory dist > /tmp/web-server.log 2>&1 &
+          node tests/web-smoke.cjs
+      - name: Browser screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: browser-smoke
+          path: web-*.png
+          if-no-files-found: ignore

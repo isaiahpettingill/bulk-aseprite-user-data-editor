@@ -23,3 +23,10 @@ window.editorDownload=(name,data)=>{
   const url=URL.createObjectURL(new Blob([data])); const a=document.createElement('a');
   a.href=url; a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(url),30000);
 };
+let hasUnsavedEdits=false;
+window.editorDirty=(dirty)=>{hasUnsavedEdits=dirty;};
+window.addEventListener('beforeunload',event=>{if(hasUnsavedEdits){event.preventDefault();event.returnValue='';}});
+window.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s')event.preventDefault();});
+
+window.editorStatus={files:0,selected:0};
+window.editorReport=(files,selected)=>{window.editorStatus={files,selected};};

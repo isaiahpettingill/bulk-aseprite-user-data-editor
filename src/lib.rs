@@ -288,8 +288,8 @@ impl Editor {
         );
     }
 }
-impl eframe::App for Editor {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl Editor {
+    fn draw(&mut self, ctx: &egui::Context) {
         let previous_selection = self.selection.selected.clone();
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input(|i| i.viewport().close_requested())
@@ -301,6 +301,8 @@ impl eframe::App for Editor {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            io::report(self.files.len(), self.selection.selected.len());
+            io::dirty(self.files.iter().any(|f| f.dirty) || !self.preview.is_empty());
             use wasm_bindgen::JsValue;
             for item in io::poll().iter() {
                 if let Ok(err) = js_sys::Reflect::get(&item, &JsValue::from_str("error")) {
@@ -585,6 +587,11 @@ if ui.button("Cancel").clicked(){self.preview.clear();}});
             });
     }
 }
+impl eframe::App for Editor {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw(ctx);
+    }
+}
 #[cfg(target_arch = "wasm32")]
 pub async fn start() -> Result<(), wasm_bindgen::JsValue> {
     use wasm_bindgen::JsCast;
@@ -646,5 +653,35 @@ mod app_tests {
         e.selection.choose(0, false, false, &[0]);
         e.stage(false);
         assert!(e.preview.is_empty());
+    }
+    #[test]
+    fn headless_egui_renders_all_tabs_and_preview() {
+        let ctx = egui::Context::default();
+        let mut editor = Editor::default();
+        editor.add(
+            "folder/art.aseprite".into(),
+            "folder/art.aseprite".into(),
+            fixture(),
+        );
+        editor.selection.choose(0, false, false, &[0]);
+        for tab in [Tab::UserData, Tab::Properties, Tab::Tags] {
+            editor.tab = tab;
+            let out = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| editor.draw(ctx),
+            );
+            assert!(!out.shapes.is_empty());
+        }
+        editor.tab = Tab::UserData;
+        editor.text = "credits=Artist".into();
+        editor.stage(false);
+        let _ = ctx.run(Default::default(), |ctx| editor.draw(ctx));
+        assert_eq!(editor.preview.len(), 1);
     }
 }
