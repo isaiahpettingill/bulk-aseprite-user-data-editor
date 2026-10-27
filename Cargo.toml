@@ -1,0 +1,31 @@
+[package]
+name = "aseprite-metadata-editor"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+serde_json = "1"
+zip = { version = "2.4", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = "0.15"
+tempfile = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[dev-dependencies]
+asefile = "0.3.8"
