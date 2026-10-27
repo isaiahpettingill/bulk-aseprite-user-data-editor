@@ -2,6 +2,8 @@
 let incoming = [];
 const importedNames = new Set();
 let pickerOpen = false;
+// Read-only lifecycle status for UI integration checks; no file contents exposed.
+window.editorPickerBusy = () => pickerOpen;
 function availableName(path) {
   const slash = path.lastIndexOf('/');
   const dot = path.lastIndexOf('.');

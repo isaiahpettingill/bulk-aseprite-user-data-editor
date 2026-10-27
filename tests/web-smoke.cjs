@@ -86,6 +86,10 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     });
     await page.waitForTimeout(500);
     await page.screenshot({path: 'web-empty.png'});
+    // Canvas controls apply focus and text events on animation frames, unlike DOM inputs.
+    const renderInput = () => page.evaluate(() => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
     const chooser = page.waitForEvent('filechooser');
     // Open files is the primary (first) toolbar action, independent of folder support.
     await page.mouse.click(40, 15);
@@ -99,12 +103,17 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     assert.deepEqual(await page.evaluate(() => window.readFileNames), ['one.aseprite', 'two.ASE', 'three.aseprite']);
     assert.deepEqual(await page.evaluate(() => window.importedFileNames), ['one.aseprite', 'two.ASE', 'three.aseprite']);
     console.log('Imported three supported files without reading the unsupported file');
+    // The external picker restores focus asynchronously. Let the canvas consume
+    // that return before starting a new platform dialog.
+    await page.waitForFunction(() => window.editorPickerBusy?.() === false && document.activeElement?.id === 'editor');
+    await renderInput();
     const cancelChooser = page.waitForEvent('filechooser');
     await page.mouse.click(40, 15);
     const cancelled = await cancelChooser;
     await cancelled.setFiles([]);
     await cancelled.element().evaluate(input => input.dispatchEvent(new Event('cancel')));
-    await page.waitForTimeout(250);
+    await page.waitForFunction(() => window.editorPickerBusy?.() === false && document.activeElement?.id === 'editor');
+    await renderInput();
     assert.equal(await page.evaluate(() => window.editorStatus.files), 3, 'Cancel must not replace existing imports');
     const duplicateChooser = page.waitForEvent('filechooser');
     await page.mouse.click(40, 15);
@@ -121,10 +130,6 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     await page.waitForTimeout(300);
     if (await page.evaluate(() => window.editorStatus.selected) !== 1) throw new Error('Ctrl+arrow unexpectedly changed selection');
     await page.screenshot({path: 'web-loaded.png'});
-    // Canvas controls apply focus and text events on animation frames, unlike DOM inputs.
-    const renderInput = () => page.evaluate(() => new Promise(resolve => {
-      requestAnimationFrame(() => requestAnimationFrame(resolve));
-    }));
     const clickControl = async name => {
       await page.waitForFunction(key => Array.isArray(window.editorUi?.[key]), name);
       const [x, y] = await page.evaluate(key => window.editorUi[key], name);

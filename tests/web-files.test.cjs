@@ -125,14 +125,18 @@ test('collisions are case-insensitive', async () => {
 
 test('overlapping picker calls are ignored until cancellation releases the picker', async () => {
   const h = harness();
+  assert.equal(h.window.editorPickerBusy(), false);
   h.window.editorOpen(false);
+  assert.equal(h.window.editorPickerBusy(), true);
   h.window.editorOpen(false);
   assert.equal(h.inputs.length, 1);
   await h.inputs[0].oncancel();
+  assert.equal(h.window.editorPickerBusy(), false);
   h.window.editorOpen(false);
   assert.equal(h.inputs.length, 2);
   h.inputs[1].files = [];
   await h.inputs[1].onchange();
+  assert.equal(h.window.editorPickerBusy(), false);
   h.window.editorOpen(false);
   assert.equal(h.inputs.length, 3);
 });
@@ -159,4 +163,23 @@ test('editor shortcuts prevent browser defaults without stealing ordinary text/s
     h.listeners.keydown({...event, preventDefault() { prevented = true; }});
     assert.equal(prevented, false, `Do not intercept ${JSON.stringify(event)}`);
   }
+});
+
+
+test('picker stays busy during asynchronous file reading and releases after completion', async () => {
+  const h = harness();
+  let complete;
+  const pending = h.file('wait.ase');
+  pending.arrayBuffer = () => new Promise(resolve => { complete = resolve; });
+  h.window.editorOpen(false);
+  h.inputs[0].files = [pending];
+  const loading = h.inputs[0].onchange();
+  assert.equal(h.window.editorPickerBusy(), true);
+  h.window.editorOpen(false);
+  assert.equal(h.inputs.length, 1);
+  complete(Uint8Array.from([1, 2, 3]).buffer);
+  await loading;
+  assert.equal(h.window.editorPickerBusy(), false);
+  assert.equal(h.focused(), 1);
+  assert.equal(h.poll()[0].name, 'wait.ase');
 });
