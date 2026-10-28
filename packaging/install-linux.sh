@@ -27,8 +27,8 @@ icon_dir="$data_home/icons/hicolor/256x256/apps"
 desktop_dir="$data_home/applications"
 mkdir -p -- "$app_dir" "$icon_dir" "$desktop_dir"
 app="$app_dir/Aseprite-Metadata-Editor.AppImage"
-icon="$icon_dir/aseprite-metadata-editor.png"
-desktop="$desktop_dir/aseprite-metadata-editor.desktop"
+icon="$icon_dir/io.github.isaiahpettingill.AsepriteMetadataEditor.png"
+desktop="$desktop_dir/io.github.isaiahpettingill.AsepriteMetadataEditor.desktop"
 temps=()
 trap 'for file in "${temps[@]}"; do rm -f -- "$file"; done' EXIT
 copy_atomic() {
@@ -58,12 +58,50 @@ text = '\n'.join([
     'Name=Aseprite Metadata Editor', 'Comment=Edit sprite metadata in bulk',
     'Exec=' + exec_argument(sys.argv[1]), 'Icon=' + desktop_escape(sys.argv[2]),
     'Terminal=false', 'Categories=Graphics;2DGraphics;', 'StartupNotify=true',
-    'StartupWMClass=aseprite-metadata-editor', ''
+    'StartupWMClass=io.github.isaiahpettingill.AsepriteMetadataEditor', ''
 ])
 Path(sys.argv[3]).write_text(text, encoding='utf-8')
 PY
 chmod 644 "$temporary"
 mv -f -- "$temporary" "$desktop"
+# Only retire a launcher produced by our earlier installer, never Aseprite's
+# launcher or a customized command. Keep its exact bytes in a non-launcher backup.
+python3 - "$desktop_dir/aseprite-metadata-editor.desktop" "$desktop" <<'PYMIGRATE'
+import os, sys, tempfile
+from pathlib import Path
+legacy, current = map(Path, sys.argv[1:])
+def fields(path):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+        return {}
+    result = {}; active = False
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if line.startswith('['):
+            active = line == '[Desktop Entry]'
+        elif active and '=' in line and not line.startswith('#'):
+            key, value = line.split('=', 1)
+            if key in result:
+                return {}
+            result[key] = value
+    return result
+try:
+    old, new = fields(legacy), fields(current)
+    expected = dict(new)
+    expected['StartupWMClass'] = 'aseprite-metadata-editor'
+    expected['Icon'] = expected.get('Icon', '').replace(
+        'io.github.isaiahpettingill.AsepriteMetadataEditor.png', 'aseprite-metadata-editor.png')
+    # Exact known fields protect custom labels, icons, actions and commands too.
+    if old == expected and new.get('Exec'):
+        fd, backup = tempfile.mkstemp(prefix=legacy.name + '.backup-', dir=legacy.parent)
+        os.close(fd)
+        try:
+            os.replace(legacy, backup)
+        except OSError:
+            os.unlink(backup)
+            raise
+        print('Previous launcher preserved as ' + Path(backup).name)
+except (OSError, UnicodeError) as error:
+    print('Previous launcher left unchanged: ' + str(error), file=sys.stderr)
+PYMIGRATE
 if command -v update-desktop-database >/dev/null; then update-desktop-database "$desktop_dir" >/dev/null 2>&1 || true; fi
 if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -f -t "$data_home/icons/hicolor" >/dev/null 2>&1 || true; fi
 printf 'Installed Aseprite Metadata Editor.\nLauncher: %s\nRun this script again with a newer AppImage to update.\n' "$desktop"

@@ -104,10 +104,14 @@ File processing stays on the device. No server receives your sprite files.
 
   This installs only this app under `${XDG_DATA_HOME:-$HOME/.local/share}`. It uses
   the supplied PNG through an absolute icon path, with matching X11/Wayland
-  window identity. It does not run the AppImage, download anything, use sudo,
+  window identity (`io.github.isaiahpettingill.AsepriteMetadataEditor`). It does not run the AppImage, download anything, use sudo,
   claim file associations, or change defaults. Rerun with a newer AppImage to
-  update. If your launcher has pinned an older manually-created entry, unpin it
-  and pin the newly installed **Aseprite Metadata Editor** entry instead.
+  update. On KDE/Wayland, use this installed launcher: embedding a window PNG in
+  the AppImage alone does not register the desktop entry with the compositor.
+  The installer backs up only a recognized legacy entry from this app; unrelated
+  launchers are left alone. If an older entry is pinned, close the old window,
+  unpin that entry and pin the newly installed **Aseprite Metadata Editor**.
+  No Plasma configuration reset is needed.
   The AppImage also includes hicolor icons, `.DirIcon`, and a `.desktop` entry
   for desktop-integration tools. A standalone template is in `packaging/`.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Give Linux desktop entry, window identity and theme icon a unique reverse-DNS name so KDE cannot fall back from our dashed name to Aseprite's icon.
+- Update the user-local installer without touching Aseprite's launcher or unrelated custom entries; preserve a backup of our recognized legacy entry.
+- Exercise actual KDE icon-theme lookup with a deliberately conflicting Aseprite theme icon, in addition to native window-icon checks.
+
 ## 0.1.2
 
 - Native context-menu/double-click action opens one sprite in installed Aseprite or LibreSprite. Unsaved changes require save/open/cancel; clean external changes reload when returning.

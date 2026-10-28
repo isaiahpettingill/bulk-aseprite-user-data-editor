@@ -1,5 +1,5 @@
 #[cfg(not(target_arch = "wasm32"))]
-const APP_ID: &str = "aseprite-metadata-editor";
+const APP_ID: &str = "io.github.isaiahpettingill.AsepriteMetadataEditor";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_options() -> eframe::NativeOptions {

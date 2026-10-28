@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(kde_icon_regression LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Qt5 REQUIRED COMPONENTS Gui)
+find_package(KF5IconThemes REQUIRED)
+add_executable(kde-icon-regression main.cpp)
+target_link_libraries(kde-icon-regression PRIVATE Qt5::Gui KF5::IconThemes)
