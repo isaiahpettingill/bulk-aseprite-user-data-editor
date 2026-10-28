@@ -22,13 +22,14 @@ class=$(xprop -id "$window" WM_CLASS)
 # egui supplies app_id as the general class with an empty instance name.
 # StartupWMClass matches the general class; an empty instance is valid ICCCM.
 [[ "$class" == 'WM_CLASS(STRING) = "", "aseprite-metadata-editor"' ]] || { printf '%s\n' "$class" >&2; exit 1; }
-xprop -id "$window" -len 300000 -notype -f _NET_WM_ICON 32c _NET_WM_ICON > "$work/icon-property"
+# Override xprop's special icon ASCII-art display as well as its word format.
+xprop -id "$window" -len 2097152 -notype -f _NET_WM_ICON 32c ' = $0+\n' _NET_WM_ICON > "$work/icon-property"
 python3 - "$work/icon-property" <<'PY'
 import re, sys
 value = open(sys.argv[1], encoding='utf-8').read().split('=', 1)[1]
 pixels = [int(n) for n in re.findall(r'\d+', value)]
 assert pixels[:2] == [256, 256], f'Unexpected window icon dimensions: {pixels[:2]}'
-assert len(pixels) >= 2 + 256 * 256, 'Incomplete window icon pixels'
+assert len(pixels) >= 2 + 256 * 256, f'Incomplete window icon pixels: {len(pixels)} words; prefix={value[:100]!r}'
 assert len(set(pixels[2:])) > 2, 'Window icon is blank or a monochrome placeholder'
 PY
 printf 'X11 WM_CLASS and 256x256 window icon verified.\n'

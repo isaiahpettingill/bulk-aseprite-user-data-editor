@@ -51,6 +51,14 @@ done
 cat > "$app/AppRun" <<'RUN'
 #!/bin/sh
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Keep the user's loader environment for external editor launches. Preserve
+# unset versus empty; neither is the same as our private AppImage library path.
+if [ "${LD_LIBRARY_PATH+x}" = x ]; then
+  export ASEPRITE_METADATA_ORIGINAL_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+else
+  unset ASEPRITE_METADATA_ORIGINAL_LD_LIBRARY_PATH
+fi
+export ASEPRITE_METADATA_APPIMAGE=1
 export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$HERE/usr/bin/aseprite-metadata-editor" "$@"
 RUN

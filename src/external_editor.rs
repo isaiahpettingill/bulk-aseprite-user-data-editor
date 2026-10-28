@@ -46,8 +46,13 @@ impl EditorCommand {
     }
 
     pub fn launch(&self, path: &Path) -> Result<(), String> {
-        let mut child = self
-            .command(path)?
+        let mut command = self.command(path)?;
+        restore_loader_environment(
+            &mut command,
+            std::env::var_os("ASEPRITE_METADATA_APPIMAGE").as_deref(),
+            std::env::var_os("ASEPRITE_METADATA_ORIGINAL_LD_LIBRARY_PATH").as_deref(),
+        );
+        let mut child = command
             .spawn()
             .map_err(|e| format!("Could not start {}: {e}", self.name))?;
         // Reap without blocking the UI or closing the editor when our app exits.
@@ -58,6 +63,28 @@ impl EditorCommand {
             });
         Ok(())
     }
+}
+
+// Only undo our own AppRun modification, never a user's ordinary environment.
+// Arguments make the behavior testable without mutating process-global state.
+fn restore_loader_environment(
+    command: &mut Command,
+    appimage_marker: Option<&std::ffi::OsStr>,
+    original: Option<&std::ffi::OsStr>,
+) {
+    if appimage_marker != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    match original {
+        Some(value) => {
+            command.env("LD_LIBRARY_PATH", value);
+        }
+        None => {
+            command.env_remove("LD_LIBRARY_PATH");
+        }
+    }
+    command.env_remove("ASEPRITE_METADATA_APPIMAGE");
+    command.env_remove("ASEPRITE_METADATA_ORIGINAL_LD_LIBRARY_PATH");
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -228,5 +255,44 @@ mod tests {
         let path = dir.path().join("aseprite");
         std::fs::write(&path, []).unwrap();
         assert!(first_available("Aseprite", [path]).is_none());
+    }
+    #[test]
+    fn external_editor_restores_original_loader_path_without_shell_expansion() {
+        use std::ffi::OsStr;
+        let mut command = Command::new("never-executed");
+        let original = OsStr::new("/user/library with spaces:$ORIGIN:/other");
+        restore_loader_environment(&mut command, Some(OsStr::new("1")), Some(original));
+        let changes: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            changes.get(OsStr::new("LD_LIBRARY_PATH")),
+            Some(&Some(original))
+        );
+        assert_eq!(
+            changes.get(OsStr::new("ASEPRITE_METADATA_APPIMAGE")),
+            Some(&None)
+        );
+        assert_eq!(
+            changes.get(OsStr::new("ASEPRITE_METADATA_ORIGINAL_LD_LIBRARY_PATH")),
+            Some(&None)
+        );
+    }
+    #[test]
+    fn external_editor_preserves_unset_versus_empty_loader_path() {
+        use std::ffi::OsStr;
+        for original in [None, Some(OsStr::new(""))] {
+            let mut command = Command::new("never-executed");
+            restore_loader_environment(&mut command, Some(OsStr::new("1")), original);
+            let changes: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+            assert_eq!(changes.get(OsStr::new("LD_LIBRARY_PATH")), Some(&original));
+        }
+    }
+    #[test]
+    fn non_appimage_launch_leaves_environment_unchanged() {
+        use std::ffi::OsStr;
+        for marker in [None, Some(OsStr::new("unrecognized"))] {
+            let mut command = Command::new("never-executed");
+            restore_loader_environment(&mut command, marker, Some(OsStr::new("ignored")));
+            assert_eq!(command.get_envs().count(), 0);
+        }
     }
 }
