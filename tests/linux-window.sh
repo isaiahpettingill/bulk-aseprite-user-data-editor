@@ -13,7 +13,7 @@ pid=$!
 window=''
 for attempt in $(seq 1 100); do
   if ! kill -0 "$pid" 2>/dev/null; then cat "$work/app.log"; echo 'Application exited before creating its window.' >&2; exit 1; fi
-  window=$(xdotool search --onlyvisible --class '^aseprite-metadata-editor$' 2>/dev/null | head -1 || true)
+  window=$(xdotool search --onlyvisible --class '^io\.github\.isaiahpettingill\.AsepriteMetadataEditor$' 2>/dev/null | head -1 || true)
   [[ -z "$window" ]] || break
   sleep 0.1
 done
@@ -21,7 +21,7 @@ done
 class=$(xprop -id "$window" WM_CLASS)
 # egui supplies app_id as the general class with an empty instance name.
 # StartupWMClass matches the general class; an empty instance is valid ICCCM.
-[[ "$class" == 'WM_CLASS(STRING) = "", "aseprite-metadata-editor"' ]] || { printf '%s\n' "$class" >&2; exit 1; }
+[[ "$class" == 'WM_CLASS(STRING) = "", "io.github.isaiahpettingill.AsepriteMetadataEditor"' ]] || { printf '%s\n' "$class" >&2; exit 1; }
 # Override xprop's special icon ASCII-art display as well as its word format.
 xprop -id "$window" -len 2097152 -notype -f _NET_WM_ICON 32c ' = $0+\n' _NET_WM_ICON > "$work/icon-property"
 python3 - "$work/icon-property" <<'PY'

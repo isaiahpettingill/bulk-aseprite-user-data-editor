@@ -9,11 +9,11 @@ app="$work/AsepriteMetadataEditor.AppDir"
 mkdir -p "$app/usr/bin" "$app/usr/lib" "$app/usr/share/licenses/aseprite-metadata-editor" \
   "$app/usr/share/icons/hicolor/256x256/apps" "$app/usr/share/applications"
 install -m755 target/release/aseprite-metadata-editor "$app/usr/bin/"
-install -m644 packaging/aseprite-metadata-editor.desktop "$app/"
-install -m644 assets/icon-256.png "$app/usr/share/icons/hicolor/256x256/apps/aseprite-metadata-editor.png"
-ln -s usr/share/icons/hicolor/256x256/apps/aseprite-metadata-editor.png "$app/aseprite-metadata-editor.png"
-ln -s aseprite-metadata-editor.png "$app/.DirIcon"
-install -m644 packaging/aseprite-metadata-editor.desktop "$app/usr/share/applications/"
+install -m644 packaging/io.github.isaiahpettingill.AsepriteMetadataEditor.desktop "$app/"
+install -m644 assets/icon-256.png "$app/usr/share/icons/hicolor/256x256/apps/io.github.isaiahpettingill.AsepriteMetadataEditor.png"
+ln -s usr/share/icons/hicolor/256x256/apps/io.github.isaiahpettingill.AsepriteMetadataEditor.png "$app/io.github.isaiahpettingill.AsepriteMetadataEditor.png"
+ln -s io.github.isaiahpettingill.AsepriteMetadataEditor.png "$app/.DirIcon"
+install -m644 packaging/io.github.isaiahpettingill.AsepriteMetadataEditor.desktop "$app/usr/share/applications/"
 install -m644 LICENSE "$app/usr/share/licenses/aseprite-metadata-editor/LICENSE"
 # Bundle linked non-platform libraries. Keep libc, the dynamic loader and GPU
 # drivers on the host; shipping those would make hardware compatibility worse.
