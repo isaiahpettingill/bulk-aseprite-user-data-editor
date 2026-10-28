@@ -19,7 +19,9 @@ for attempt in $(seq 1 100); do
 done
 [[ -n "$window" ]] || { cat "$work/app.log"; echo 'Expected application WM_CLASS not found.' >&2; exit 1; }
 class=$(xprop -id "$window" WM_CLASS)
-[[ "$class" == 'WM_CLASS(STRING) = "aseprite-metadata-editor", "aseprite-metadata-editor"' ]] || { printf '%s\n' "$class" >&2; exit 1; }
+# egui supplies app_id as the general class with an empty instance name.
+# StartupWMClass matches the general class; an empty instance is valid ICCCM.
+[[ "$class" == 'WM_CLASS(STRING) = "", "aseprite-metadata-editor"' ]] || { printf '%s\n' "$class" >&2; exit 1; }
 xprop -id "$window" -len 300000 -notype -f _NET_WM_ICON 32c _NET_WM_ICON > "$work/icon-property"
 python3 - "$work/icon-property" <<'PY'
 import re, sys

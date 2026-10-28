@@ -1,4 +1,6 @@
 pub mod aseprite;
+#[cfg(not(target_arch = "wasm32"))]
+mod external_editor;
 mod io;
 mod preview;
 mod properties;
@@ -65,8 +67,111 @@ pub struct Editor {
     open_clicks: u64,
     preview: Option<SpritePreview>,
     preview_decodes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    external_editor: Option<Option<external_editor::EditorCommand>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    external_pending: Option<usize>,
+    #[cfg(not(target_arch = "wasm32"))]
+    external_opened: Option<usize>,
+    #[cfg(not(target_arch = "wasm32"))]
+    window_focused: bool,
 }
 impl Editor {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_external(&mut self, index: usize) {
+        if self
+            .external_editor
+            .as_ref()
+            .and_then(|e| e.as_ref())
+            .is_none()
+        {
+            self.status = "Aseprite or LibreSprite is not installed".into();
+            return;
+        }
+        if !self.commit_draft() {
+            return;
+        }
+        if self.files[index].dirty {
+            self.external_pending = Some(index);
+        } else {
+            self.launch_external(index);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn launch_external(&mut self, index: usize) {
+        let result = self
+            .external_editor
+            .as_ref()
+            .and_then(|e| e.as_ref())
+            .ok_or_else(|| "Aseprite or LibreSprite is not installed".to_string())
+            .and_then(|editor| editor.launch(&self.files[index].path));
+        match result {
+            Ok(()) => {
+                self.external_opened = Some(index);
+                self.status = format!("Opened {} externally", self.files[index].name);
+            }
+            Err(error) => self.status = error,
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_one(&mut self, index: usize) -> Result<(), String> {
+        let file = &mut self.files[index];
+        let bytes = file.doc.encode()?;
+        io::save(&file.path, &file.original, &bytes)?;
+        file.original = bytes;
+        file.dirty = false;
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn refresh_external(&mut self, index: usize) -> Result<(), String> {
+        let file = &self.files[index];
+        let metadata = std::fs::symlink_metadata(&file.path).map_err(|e| e.to_string())?;
+        if !metadata.file_type().is_file() || metadata.len() > io::MAX_FILE as u64 {
+            return Err("External file is not a supported regular file".into());
+        }
+        let remaining = 256 * 1024 * 1024
+            - self.files.iter().map(|f| f.original.len()).sum::<usize>()
+            + file.original.len();
+        let limit = io::MAX_FILE.min(remaining);
+        if metadata.len() > limit as u64 {
+            return Err("External file exceeds session size limit".into());
+        }
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(&file.path)
+            .map_err(|e| e.to_string())?
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > limit {
+            return Err("External file exceeds session size limit".into());
+        }
+        if bytes == file.original {
+            return Ok(());
+        }
+        if file.dirty || (self.loaded_selection.contains(&index) && self.has_draft()) {
+            return Err("File changed externally; unsaved edits retained. Save is blocked until the conflict is resolved.".into());
+        }
+        let doc = Document::parse(&bytes)?;
+        let file = &mut self.files[index];
+        file.original = bytes;
+        file.doc = doc;
+        file.undo.clear();
+        file.redo.clear();
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.index == index)
+        {
+            self.preview = None;
+        }
+        if self.loaded_selection.contains(&index) {
+            self.load_fields();
+        }
+        self.status = "Reloaded external changes".into();
+        Ok(())
+    }
+
     fn show_preview(&mut self, ui: &mut egui::Ui) {
         let Some(index) = self.loaded_focus else {
             return;
@@ -589,6 +694,21 @@ impl Editor {
 }
 impl Editor {
     fn draw(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.external_editor.is_none() {
+                self.external_editor = Some(external_editor::discover());
+            }
+            let focused = ctx.input(|input| input.focused);
+            if focused && !self.window_focused {
+                if let Some(index) = self.external_opened {
+                    if let Err(error) = self.refresh_external(index) {
+                        self.status = error;
+                    }
+                }
+            }
+            self.window_focused = focused;
+        }
         self.sync_fields();
         report_state(self.find_tab, self.matches());
         let mut save_requested = false;
@@ -684,6 +804,8 @@ impl Editor {
                     let mut seen = BTreeSet::new();
                     let mut chosen = None;
                     let mut action = None;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let mut open_external = None;
                     for (i, f) in self.files.iter().enumerate() {
                         let normalized = f.name.replace('\\', "/");
                         let parts: Vec<_> = normalized.split('/').collect();
@@ -755,7 +877,23 @@ impl Editor {
                                     ui.input(|s| s.modifiers.shift),
                                 ));
                             }
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if response.double_clicked() {
+                                chosen = Some((i, false, false));
+                                open_external = Some(i);
+                            }
                             response.context_menu(|ui| {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                {
+                                    let editor = self.external_editor.as_ref().and_then(|e| e.as_ref());
+                                    let label = editor.map(|e| format!("Open in {}", e.label())).unwrap_or_else(|| "Open in Aseprite".into());
+                                    if ui.add_enabled(editor.is_some(), egui::Button::new(label))
+                                        .on_disabled_hover_text("Install Aseprite or LibreSprite, then restart this app")
+                                        .clicked() {
+                                        open_external = Some(i);
+                                        ui.close_menu();
+                                    }
+                                }
                                 if ui.button("Select only this file").clicked() {
                                     chosen = Some((i, false, false));
                                     ui.close_menu();
@@ -777,6 +915,8 @@ impl Editor {
                         self.selection.choose(i, c, s, &visible);
                         self.sync_fields();
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(index) = open_external { self.request_external(index); }
                     if let Some(save) = action {
                         if save {
                             self.save();
@@ -814,6 +954,10 @@ impl Editor {
             if key == egui::Key::Escape {
                 self.settings = false;
                 self.confirm_close = false;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.external_pending = None;
+                }
                 if self.find_tab {
                     self.find_tab = false;
                 }
@@ -1096,6 +1240,33 @@ impl Editor {
         if save_requested {
             self.save();
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(index) = self.external_pending {
+            egui::Window::new("Open in sprite editor")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("{} has unsaved changes", self.files[index].name));
+                    ui.horizontal(|ui| {
+                        if ui.button("Save and open").clicked() && self.commit_draft() {
+                            match self.save_one(index) {
+                                Ok(()) => {
+                                    self.external_pending = None;
+                                    self.launch_external(index);
+                                }
+                                Err(error) => self.status = error,
+                            }
+                        }
+                        if ui.button("Open without saving").clicked() {
+                            self.external_pending = None;
+                            self.launch_external(index);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.external_pending = None;
+                        }
+                    });
+                });
+        }
         if self.confirm_close {
             egui::Window::new("Unsaved changes")
                 .collapsible(false)
@@ -1255,6 +1426,122 @@ mod app_tests {
         e.sync_fields();
         e
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn external_refresh_keeps_dirty_edits_and_refreshes_clean_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut editor = editor();
+        let path = directory.path().join("one.aseprite");
+        editor.files[0].path = path.clone();
+        let mut external = editor.files[0].doc.clone();
+        external.set_text(0, "external").unwrap();
+        std::fs::write(&path, external.encode().unwrap()).unwrap();
+        editor.text = "pending local text".into();
+        assert!(editor.refresh_external(0).is_err());
+        assert_eq!(editor.text, "pending local text");
+        assert!(editor.commit_draft());
+        assert!(editor.save_one(0).is_err());
+        assert!(editor.files[0].dirty);
+        editor.undo();
+        assert!(!editor.files[0].dirty);
+        editor.refresh_external(0).unwrap();
+        assert_eq!(editor.text, "external");
+        assert!(editor.files[0].undo.is_empty());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn refreshing_other_file_preserves_current_text_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut editor = editor();
+        let path = directory.path().join("two.aseprite");
+        editor.files[1].path = path.clone();
+        let mut external = editor.files[1].doc.clone();
+        external.set_text(0, "external").unwrap();
+        std::fs::write(&path, external.encode().unwrap()).unwrap();
+        editor.text = "keep my current draft".into();
+        editor.refresh_external(1).unwrap();
+        assert_eq!(editor.text, "keep my current draft");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn double_click_opens_only_clicked_file_and_requests_dirty_confirmation() {
+        let mut editor = editor();
+        editor.external_editor = Some(Some(external_editor::EditorCommand::for_test(
+            "never-launched".into(),
+        )));
+        editor.files[1]
+            .doc
+            .set_text(0, "dirty second file")
+            .unwrap();
+        editor.files[1].dirty = true;
+        editor.selection.choose(1, true, false, &[0, 1]);
+        editor.sync_fields();
+        let ctx = egui::Context::default();
+        let frame = |time, events| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1100.0, 750.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(frame(0.0, vec![]), |ctx| editor.draw(ctx));
+        let pos = ctx
+            .data(|data| data.get_temp::<egui::Rect>(egui::Id::new("test-rect-file-1")))
+            .unwrap()
+            .center();
+        for (time, pressed) in [(0.1, true), (0.11, false), (0.2, true), (0.21, false)] {
+            let _ = ctx.run(
+                frame(
+                    time,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::default(),
+                        },
+                    ],
+                ),
+                |ctx| editor.draw(ctx),
+            );
+        }
+        assert_eq!(editor.selection.selected, BTreeSet::from([1]));
+        assert_eq!(editor.external_pending, Some(1));
+        assert!(editor.external_opened.is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn dirty_external_open_requires_confirmation_without_saving_or_launching() {
+        let mut editor = editor();
+        editor.external_editor = Some(Some(external_editor::EditorCommand::for_test(
+            "never-launched".into(),
+        )));
+        editor.text = "pending".into();
+        editor.request_external(0);
+        assert_eq!(editor.external_pending, Some(0));
+        assert!(editor.files[0].dirty);
+        assert_eq!(editor.files[0].doc.targets()[0].text, "pending");
+        editor.external_pending = None;
+        assert!(editor.files[0].dirty);
+        assert!(editor.external_opened.is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn unavailable_external_editor_does_not_apply_draft() {
+        let mut editor = editor();
+        editor.external_editor = Some(None);
+        editor.text = "pending".into();
+        editor.request_external(0);
+        assert!(editor.external_pending.is_none());
+        assert!(editor.files[0].undo.is_empty());
+        assert_eq!(editor.text, "pending");
+    }
+
     #[test]
     fn sprite_preview_is_cached_across_metadata_edits_and_tracks_focus() {
         let mut editor = editor();

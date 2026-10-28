@@ -2,6 +2,8 @@
 
 ## 0.1.2
 
+- Native context-menu/double-click action opens one sprite in installed Aseprite or LibreSprite. Unsaved changes require save/open/cancel; clean external changes reload when returning.
+
 - Compact first-frame sprite preview below metadata, with nearest-neighbor pixels and a transparency checkerboard; only the focused file is decoded and metadata edits reuse the texture.
 
 - Use the supplied icon consistently in Linux launcher and window identities.

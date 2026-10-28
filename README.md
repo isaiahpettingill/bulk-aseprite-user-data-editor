@@ -16,6 +16,14 @@ Edit one file directly, or select several for bulk **Append** (default) / **Over
 The desktop app edits originals in-place with atomic replacement, unique `.bak`
 recovery copies and external-change checks. Web Ctrl+S downloads an edited ZIP.
 
+On desktop, double-click a file or use **Open in Aseprite** from its context menu.
+Aseprite is preferred; installed LibreSprite is the fallback. Discovery checks
+PATH and common installation locations once at startup (Flatpak-only installs
+are not detected). Unsaved changes prompt **Save and open**, **Open without
+saving**, or **Cancel**. Returning reloads clean external changes; conflicting
+local edits are retained and saving remains blocked. This action is not available
+in browsers.
+
 **Find/Replace** is a separate tab. **Ctrl+F** or **Ctrl+H** opens it for the current
 selection. Choose user data or tag names, then **Replace all**; Ctrl+S saves.
 Outside text fields, **Ctrl+Z** undoes and **Ctrl+Shift+Z** redoes document changes.
