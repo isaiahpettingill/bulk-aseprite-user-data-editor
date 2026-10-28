@@ -1,7 +1,7 @@
 # Aseprite Metadata Editor
 
 A compact Rust/egui editor for individual and bulk `.aseprite` / `.ase` metadata.
-Sprite user data is the default target; artwork is not decoded or re-encoded.
+Sprite user data is the default target; saving preserves artwork bytes without re-encoding.
 
 ## Use
 
@@ -16,6 +16,14 @@ Edit one file directly, or select several for bulk **Append** (default) / **Over
 The desktop app edits originals in-place with atomic replacement, unique `.bak`
 recovery copies and external-change checks. Web Ctrl+S downloads an edited ZIP.
 
+On desktop, double-click a file or use **Open in Aseprite** from its context menu.
+Aseprite is preferred; installed LibreSprite is the fallback. Discovery checks
+PATH and common installation locations once at startup (Flatpak-only installs
+are not detected). Unsaved changes prompt **Save and open**, **Open without
+saving**, or **Cancel**. Returning reloads clean external changes; conflicting
+local edits are retained and saving remains blocked. This action is not available
+in browsers.
+
 **Find/Replace** is a separate tab. **Ctrl+F** or **Ctrl+H** opens it for the current
 selection. Choose user data or tag names, then **Replace all**; Ctrl+S saves.
 Outside text fields, **Ctrl+Z** undoes and **Ctrl+Shift+Z** redoes document changes.
@@ -25,6 +33,11 @@ Properties use name/type/value rows with expandable nested values. Bulk edits
 change only touched properties, preserving unrelated values. Raw JSON is an
 advanced option. **User-data color** is also under Advanced: it is a metadata
 marker, not an artwork or palette color.
+
+A small first-frame preview appears below metadata for the focused sprite, using
+nearest-neighbor pixels and a transparency checkerboard. It is cached while you
+edit. Oversized, tilemap, or unsupported previews show a short unavailable hint;
+metadata editing still works.
 
 Unsupported property encodings and unknown chunks are preserved rather than
 guessed. Artwork payloads remain unchanged. Malformed files are rejected, not
@@ -43,8 +56,11 @@ tab. Duplicate or unsafe ZIP paths are rejected rather than overwritten.
 
 ## Build
 
-Install stable Rust. On Debian/Ubuntu, install `libxkbcommon-dev libwayland-dev
-libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev` first.
+Install stable Rust. On Debian/Ubuntu, install `libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev
+libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev` first. Native X11 runs need
+`libxkbcommon0` and `libxkbcommon-x11-0` at runtime, even when compilation succeeds.
+The AppImage bundles these dynamically loaded keyboard libraries and their linked
+dependencies; system graphics drivers and glibc remain host requirements.
 
 ```sh
 cargo run --locked --release
@@ -79,8 +95,21 @@ File processing stays on the device. No server receives your sprite files.
 - Linux: x86_64 AppImage built on Ubuntu 22.04 (glibc ≥ 2.35), requiring working
   graphics drivers. Run `chmod +x *.AppImage`, then open it. Without FUSE, launch
   with `APPIMAGE_EXTRACT_AND_RUN=1 ./Aseprite-Metadata-Editor-linux-x86_64.AppImage`.
-  The package contains a `.desktop` entry; a standalone entry is also provided in
-  `packaging/`. It does not silently claim file associations or change defaults.
+  For the application menu, download `install-linux.sh` and
+  `aseprite-metadata-editor.png` from the same release beside your AppImage, then run:
+
+  ```sh
+  bash install-linux.sh ./Aseprite-Metadata-Editor-linux-x86_64.AppImage
+  ```
+
+  This installs only this app under `${XDG_DATA_HOME:-$HOME/.local/share}`. It uses
+  the supplied PNG through an absolute icon path, with matching X11/Wayland
+  window identity. It does not run the AppImage, download anything, use sudo,
+  claim file associations, or change defaults. Rerun with a newer AppImage to
+  update. If your launcher has pinned an older manually-created entry, unpin it
+  and pin the newly installed **Aseprite Metadata Editor** entry instead.
+  The AppImage also includes hicolor icons, `.DirIcon`, and a `.desktop` entry
+  for desktop-integration tools. A standalone template is in `packaging/`.
 
 Build the Linux package with `cargo build --locked --release` then
 `packaging/appimage.sh`. Build the Windows installer with NSIS from `packaging/`:

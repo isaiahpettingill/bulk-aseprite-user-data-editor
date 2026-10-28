@@ -1,6 +1,6 @@
 [package]
 name = "aseprite-metadata-editor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "BSD-3-Clause"
 
@@ -8,6 +8,8 @@ license = "BSD-3-Clause"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+asefile = "=0.3.8"
+flate2 = "1"
 aseprite-loader = "=0.4.2"
 eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 serde_json = "1"
@@ -27,6 +29,3 @@ web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElemen
 [profile.release]
 lto = "thin"
 strip = true
-
-[dev-dependencies]
-asefile = "0.3.8"

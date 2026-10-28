@@ -8,3 +8,4 @@ Icon=aseprite-metadata-editor
 Terminal=false
 Categories=Graphics;2DGraphics;
 StartupNotify=true
+StartupWMClass=aseprite-metadata-editor

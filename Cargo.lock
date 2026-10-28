@@ -142,11 +142,12 @@ dependencies = [
 
 [[package]]
 name = "aseprite-metadata-editor"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "asefile",
  "aseprite-loader",
  "eframe",
+ "flate2",
  "image 0.25.10",
  "js-sys",
  "rfd",

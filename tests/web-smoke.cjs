@@ -7,11 +7,22 @@ const palette = Buffer.alloc(8); palette.writeUInt32LE(8); palette.writeUInt16LE
 const userData = Buffer.alloc(12 + initialText.length);
 userData.writeUInt32LE(userData.length); userData.writeUInt16LE(0x2020, 4);
 userData.writeUInt32LE(1, 6); userData.writeUInt16LE(initialText.length, 10); initialText.copy(userData, 12);
-const file = Buffer.alloc(144 + palette.length + userData.length);
+function chunk(kind, data) {
+  const bytes = Buffer.alloc(6 + data.length);
+  bytes.writeUInt32LE(bytes.length); bytes.writeUInt16LE(kind, 4); data.copy(bytes, 6);
+  return bytes;
+}
+const layer = Buffer.alloc(19); layer.writeUInt16LE(1); layer[12] = 255;
+layer.writeUInt16LE(1, 16); layer[18] = 76;
+const cel = Buffer.alloc(28); cel[6] = 255; cel.writeUInt16LE(2, 16); cel.writeUInt16LE(1, 18);
+Buffer.from([255, 0, 0, 255, 0, 0, 255, 0]).copy(cel, 20);
+const chunks = Buffer.concat([palette, userData, chunk(0x2004, layer), chunk(0x2005, cel)]);
+const file = Buffer.alloc(144 + chunks.length);
 file.writeUInt32LE(file.length, 0); file.writeUInt16LE(0xa5e0, 4);
-for (const offset of [6, 8, 10]) file.writeUInt16LE(1, offset);
+for (const offset of [6, 10]) file.writeUInt16LE(1, offset);
+file.writeUInt16LE(2, 8); file.writeUInt32LE(1, 14);
 file.writeUInt16LE(32, 12); file.writeUInt32LE(file.length - 128, 128); file.writeUInt16LE(0xf1fa, 132);
-file.writeUInt16LE(2, 134); palette.copy(file, 144); userData.copy(file, 144 + palette.length);
+file.writeUInt16LE(4, 134); chunks.copy(file, 144);
 
 // Inspect the generated ZIP and Aseprite chunk bytes independently of the app.
 function exportedTexts(archive) {
@@ -106,6 +117,9 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
     assert.deepEqual(await page.evaluate(() => window.readFileNames), ['one.aseprite', 'two.ASE', 'three.aseprite']);
     assert.deepEqual(await page.evaluate(() => window.importedFileNames), ['one.aseprite', 'two.ASE', 'three.aseprite']);
     console.log('Imported three supported files without reading the unsupported file');
+    await page.waitForFunction(() => window.editorUi?.previewWidth === 2 && window.editorUi?.previewHeight === 1);
+    assert.ok(await page.evaluate(() => window.editorUi.preview[1] > window.editorUi.text[1]), 'Sprite preview must be below metadata');
+    assert.equal(await page.evaluate(() => window.editorUi.previewDecodes), 1, 'Only focused sprite should decode');
     // The external picker restores focus asynchronously. Let the canvas consume
     // that return before starting a new platform dialog.
     await page.waitForFunction(() => window.editorPickerBusy?.() === false && document.activeElement?.id === 'editor');
@@ -143,6 +157,14 @@ for (const name of ['one.aseprite', 'two.ASE', 'three.aseprite', 'unsupported.pn
         await page.waitForFunction(key => window.editorUi?.[key + 'Focused'] === true, name);
       }
     };
+    const cachedDecodes = await page.evaluate(() => window.editorUi.previewDecodes);
+    await clickControl('text');
+    await page.keyboard.press('End');
+    await page.keyboard.type('x');
+    await renderInput();
+    await page.keyboard.press('Backspace');
+    await renderInput();
+    assert.equal(await page.evaluate(() => window.editorUi.previewDecodes), cachedDecodes, 'Metadata typing must reuse preview texture');
     const saveArchive = async () => {
       const download = page.waitForEvent('download');
       await page.keyboard.press('Control+s');

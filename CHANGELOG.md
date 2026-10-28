@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- Native context-menu/double-click action opens one sprite in installed Aseprite or LibreSprite. Unsaved changes require save/open/cancel; clean external changes reload when returning.
+
+- Compact first-frame sprite preview below metadata, with nearest-neighbor pixels and a transparency checkerboard; only the focused file is decoded and metadata edits reuse the texture.
+
+- Use the supplied icon consistently in Linux launcher and window identities.
+- Include hicolor icons, desktop metadata and .DirIcon in the AppImage.
+- Add a per-user launcher installer for an already downloaded AppImage, with
+  an explicit icon path and matching Wayland app ID / X11 WM_CLASS.
+
 ## 0.1.1
 
 - Put multi-file Aseprite import first, filter unrelated files before reading bytes,
