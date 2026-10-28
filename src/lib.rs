@@ -1,5 +1,6 @@
 pub mod aseprite;
 mod io;
+mod preview;
 mod properties;
 mod selection;
 use aseprite::Document;
@@ -27,6 +28,11 @@ enum Tab {
     Properties,
     Tags,
 }
+struct SpritePreview {
+    index: usize,
+    image: Result<egui::TextureHandle, String>,
+}
+
 #[derive(Default)]
 pub struct Editor {
     files: Vec<File>,
@@ -57,8 +63,74 @@ pub struct Editor {
     allow_close: bool,
     pending_input: Vec<egui::Event>,
     open_clicks: u64,
+    preview: Option<SpritePreview>,
+    preview_decodes: u64,
 }
 impl Editor {
+    fn show_preview(&mut self, ui: &mut egui::Ui) {
+        let Some(index) = self.loaded_focus else {
+            return;
+        };
+        // Artwork is immutable in this metadata-only editor. Saving, undoing,
+        // or typing metadata must not decode the sprite again.
+        if self.preview.as_ref().is_none_or(|p| p.index != index) {
+            self.preview_decodes += 1;
+            let image = preview::render_first_frame(&self.files[index].original).map(|image| {
+                ui.ctx().load_texture(
+                    "focused-sprite-preview",
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width, image.height],
+                        &image.rgba,
+                    ),
+                    egui::TextureOptions::NEAREST,
+                )
+            });
+            self.preview = Some(SpritePreview { index, image });
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(egui::RichText::new(&self.files[index].name).small());
+        report_counter("previewDecodes", self.preview_decodes);
+        match &self.preview.as_ref().unwrap().image {
+            Ok(texture) => {
+                let source = texture.size_vec2();
+                let available = egui::vec2(ui.available_width().clamp(1.0, 240.0), 160.0);
+                let fit = (available.x / source.x).min(available.y / source.y);
+                let scale = if fit >= 1.0 {
+                    fit.floor().min(8.0)
+                } else {
+                    fit
+                };
+                let size = source * scale;
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter().with_clip_rect(rect);
+                for row in 0..(size.y / 8.0).ceil() as usize {
+                    for col in 0..(size.x / 8.0).ceil() as usize {
+                        let color = if (row + col) % 2 == 0 { 80 } else { 112 };
+                        let cell = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(col as f32 * 8.0, row as f32 * 8.0),
+                            egui::vec2(8.0, 8.0),
+                        );
+                        painter.rect_filled(cell, 0.0, egui::Color32::from_gray(color));
+                    }
+                }
+                painter.image(
+                    texture.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                report_widget("preview", &response);
+                report_counter("previewWidth", source.x as u64);
+                report_counter("previewHeight", source.y as u64);
+                response.on_hover_text("First frame · focused sprite");
+            }
+            Err(reason) => {
+                ui.weak("Preview unavailable").on_hover_text(reason);
+            }
+        }
+    }
+
     // egui TextEdit can lose text when a focus-changing pointer event is
     // coalesced into the same frame. Preserve event order across a frame
     // boundary rather than reconstructing text/cursor edits ourselves.
@@ -843,6 +915,7 @@ impl Editor {
                         self.replace_all();
                     }
                 });
+                self.show_preview(ui);
                 return;
             }
             ui.horizontal(|ui| {
@@ -945,6 +1018,7 @@ impl Editor {
                         .is_some_and(|t| t.warning.is_none());
                     egui::ScrollArea::vertical()
                         .id_salt("properties-scroll")
+                        .max_height((ui.available_height() - 200.0).max(100.0))
                         .show(ui, |ui| {
                             ui.add_enabled_ui(editable, |ui| {
                                 match serde_json::from_str::<serde_json::Value>(&self.properties) {
@@ -982,17 +1056,19 @@ impl Editor {
                         .clone()
                         .unwrap_or_else(|| self.files[i].doc.tags());
                     let mut edited = false;
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for tag in &mut tags {
-                            ui.horizontal(|ui| {
-                                edited |= ui.text_edit_singleline(&mut tag.name).changed();
-                                edited |= ui
-                                    .add(egui::DragValue::new(&mut tag.from).prefix("From "))
-                                    .changed();
-                                edited |= ui
-                                    .add(egui::DragValue::new(&mut tag.to).prefix("To "))
-                                    .changed();
-                                edited |= ui
+                    egui::ScrollArea::vertical()
+                        .max_height((ui.available_height() - 200.0).max(100.0))
+                        .show(ui, |ui| {
+                            for tag in &mut tags {
+                                ui.horizontal(|ui| {
+                                    edited |= ui.text_edit_singleline(&mut tag.name).changed();
+                                    edited |= ui
+                                        .add(egui::DragValue::new(&mut tag.from).prefix("From "))
+                                        .changed();
+                                    edited |= ui
+                                        .add(egui::DragValue::new(&mut tag.to).prefix("To "))
+                                        .changed();
+                                    edited |= ui
                                     .add(
                                         egui::DragValue::new(&mut tag.direction)
                                             .range(0..=3)
@@ -1002,17 +1078,20 @@ impl Editor {
                                         "0 Forward · 1 Reverse · 2 Ping-pong · 3 Reverse ping-pong",
                                     )
                                     .changed();
-                                edited |= ui
-                                    .add(egui::DragValue::new(&mut tag.repeat).prefix("Repeat "))
-                                    .changed();
-                            });
-                        }
-                    });
+                                    edited |= ui
+                                        .add(
+                                            egui::DragValue::new(&mut tag.repeat).prefix("Repeat "),
+                                        )
+                                        .changed();
+                                });
+                            }
+                        });
                     if edited {
                         self.tag_edits = Some(tags);
                     }
                 }
             }
+            self.show_preview(ui);
         });
         if save_requested {
             self.save();
@@ -1176,6 +1255,28 @@ mod app_tests {
         e.sync_fields();
         e
     }
+    #[test]
+    fn sprite_preview_is_cached_across_metadata_edits_and_tracks_focus() {
+        let mut editor = editor();
+        let ctx = egui::Context::default();
+        let show = |editor: &mut Editor| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| editor.show_preview(ui));
+            });
+        };
+        show(&mut editor);
+        assert_eq!(editor.preview_decodes, 1);
+        editor.text = "changed metadata".into();
+        assert!(editor.commit_draft());
+        show(&mut editor);
+        assert_eq!(editor.preview_decodes, 1);
+        editor.selection.choose(1, false, false, &[0, 1]);
+        editor.sync_fields();
+        show(&mut editor);
+        assert_eq!(editor.preview_decodes, 2);
+        assert_eq!(editor.preview.as_ref().unwrap().index, 1);
+    }
+
     #[test]
     fn single_edit_commit_is_direct_and_idempotent() {
         let mut e = editor();

@@ -147,6 +147,7 @@ dependencies = [
  "asefile",
  "aseprite-loader",
  "eframe",
+ "flate2",
  "image 0.25.10",
  "js-sys",
  "rfd",
@@ -155,7 +156,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "winit",
  "zip",
 ]
 

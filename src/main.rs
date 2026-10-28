@@ -10,11 +10,6 @@ fn native_options() -> eframe::NativeOptions {
             .with_app_id(APP_ID)
             .with_inner_size([1000.0, 700.0])
             .with_icon(icon),
-        // egui's app_id sets Wayland identity; X11 needs its WM_CLASS as well.
-        #[cfg(target_os = "linux")]
-        window_builder: Some(Box::new(|attributes| {
-            winit::platform::x11::WindowAttributesExtX11::with_name(attributes, APP_ID, APP_ID)
-        })),
         ..Default::default()
     }
 }

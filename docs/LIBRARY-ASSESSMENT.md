@@ -131,3 +131,17 @@ preservation. The library's layer flags are never used to rebuild layers.
 Regression tests exercise truncated layer/tag/user-data fields, excessive tag
 counts, malformed property lengths, future flags, nested properties, and
 independent `asefile` decoding with unchanged RGBA/indexed pixels.
+
+## Read-only sprite preview
+
+`asefile = "=0.3.8"` now also renders the focused sprite's first frame.
+The preview adapter validates dimensions, chunk/layer counts, palette ranges and
+a bounded decoded-pixel budget, then supplies only supported first-frame drawing
+chunks to that library. Compressed cel output is bounded before library decoding.
+Typed/unknown metadata never enters the preview renderer; original document
+bytes and surgical writes remain independent. Tilemaps and linked first-frame
+cels are currently unsupported previews, not blocked metadata edits.
+
+Preview limits: 16 MiB input, 1024 pixels per dimension, 128 layers, 4096 chunks,
+and 2 Mi decoded cel pixels. Only the focused file is decoded, with a single
+cached nearest-neighbor texture; typing and saving metadata do not re-render it.

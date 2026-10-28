@@ -1,7 +1,7 @@
 # Aseprite Metadata Editor
 
 A compact Rust/egui editor for individual and bulk `.aseprite` / `.ase` metadata.
-Sprite user data is the default target; artwork is not decoded or re-encoded.
+Sprite user data is the default target; saving preserves artwork bytes without re-encoding.
 
 ## Use
 
@@ -25,6 +25,11 @@ Properties use name/type/value rows with expandable nested values. Bulk edits
 change only touched properties, preserving unrelated values. Raw JSON is an
 advanced option. **User-data color** is also under Advanced: it is a metadata
 marker, not an artwork or palette color.
+
+A small first-frame preview appears below metadata for the focused sprite, using
+nearest-neighbor pixels and a transparency checkerboard. It is cached while you
+edit. Oversized, tilemap, or unsupported previews show a short unavailable hint;
+metadata editing still works.
 
 Unsupported property encodings and unknown chunks are preserved rather than
 guessed. Artwork payloads remain unchanged. Malformed files are rejected, not
