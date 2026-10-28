@@ -43,17 +43,23 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev desktop-file-utils
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev desktop-file-utils
       - run: cargo test --locked && cargo build --locked --release
       - run: desktop-file-validate packaging/aseprite-metadata-editor.desktop
       - run: bash tests/linux-installer.sh
       - run: packaging/appimage.sh
-      - name: Verify packaged launcher icon
+      - name: Verify packaged launcher icon and runtime libraries
         run: |
           (cd dist && ./Aseprite-Metadata-Editor-linux-x86_64.AppImage --appimage-extract >/dev/null)
           cmp assets/icon-256.png dist/squashfs-root/.DirIcon
           cmp assets/icon-256.png dist/squashfs-root/usr/share/icons/hicolor/256x256/apps/aseprite-metadata-editor.png
           desktop-file-validate dist/squashfs-root/aseprite-metadata-editor.desktop
+          test -f dist/squashfs-root/usr/lib/libxkbcommon.so.0
+          test -f dist/squashfs-root/usr/lib/libxkbcommon-x11.so.0
+          test -f dist/squashfs-root/usr/lib/libxcb-xkb.so.1
+          test ! -e dist/squashfs-root/usr/lib/libc.so.6
+          ! find dist/squashfs-root/usr/lib -name 'ld-linux*' -print -quit | grep -q .
+          LD_LIBRARY_PATH="$PWD/dist/squashfs-root/usr/lib" python3 -c 'import ctypes, os; root = os.environ["LD_LIBRARY_PATH"]; [ctypes.CDLL(root + "/" + name) for name in ("libxkbcommon.so.0", "libxkbcommon.so", "libxkbcommon-x11.so.0", "libxkbcommon-x11.so")]'
           rm -rf dist/squashfs-root
       - name: Attach user-local Linux installer and original icon
         run: |

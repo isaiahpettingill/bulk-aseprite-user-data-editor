@@ -48,8 +48,11 @@ tab. Duplicate or unsafe ZIP paths are rejected rather than overwritten.
 
 ## Build
 
-Install stable Rust. On Debian/Ubuntu, install `libxkbcommon-dev libwayland-dev
-libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev` first.
+Install stable Rust. On Debian/Ubuntu, install `libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev
+libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev` first. Native X11 runs need
+`libxkbcommon0` and `libxkbcommon-x11-0` at runtime, even when compilation succeeds.
+The AppImage bundles these dynamically loaded keyboard libraries and their linked
+dependencies; system graphics drivers and glibc remain host requirements.
 
 ```sh
 cargo run --locked --release
