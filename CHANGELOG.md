@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Use the supplied icon consistently in Linux launcher and window identities.
+- Include hicolor icons, desktop metadata and .DirIcon in the AppImage.
+- Add a per-user launcher installer for an already downloaded AppImage, with
+  an explicit icon path and matching Wayland app ID / X11 WM_CLASS.
+
 ## 0.1.1
 
 - Put multi-file Aseprite import first, filter unrelated files before reading bytes,

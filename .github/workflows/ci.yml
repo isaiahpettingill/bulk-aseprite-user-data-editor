@@ -25,11 +25,17 @@ jobs:
         with:
           cache-on-failure: true
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev xvfb xdotool x11-utils
+      - name: Linux launcher installation tests
+        if: runner.os == 'Linux'
+        run: bash tests/linux-installer.sh
       - run: cargo fmt --all -- --check
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --release
+      - name: Verify Linux window identity and icon
+        if: runner.os == 'Linux'
+        run: ASEPRITE_TEST_XVFB=1 xvfb-run -a bash tests/linux-window.sh
       - name: Compile Windows installer (includes destination chooser)
         if: runner.os == 'Windows'
         shell: pwsh

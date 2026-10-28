@@ -79,8 +79,21 @@ File processing stays on the device. No server receives your sprite files.
 - Linux: x86_64 AppImage built on Ubuntu 22.04 (glibc ≥ 2.35), requiring working
   graphics drivers. Run `chmod +x *.AppImage`, then open it. Without FUSE, launch
   with `APPIMAGE_EXTRACT_AND_RUN=1 ./Aseprite-Metadata-Editor-linux-x86_64.AppImage`.
-  The package contains a `.desktop` entry; a standalone entry is also provided in
-  `packaging/`. It does not silently claim file associations or change defaults.
+  For the application menu, download `install-linux.sh` and
+  `aseprite-metadata-editor.png` from the same release beside your AppImage, then run:
+
+  ```sh
+  bash install-linux.sh ./Aseprite-Metadata-Editor-linux-x86_64.AppImage
+  ```
+
+  This installs only this app under `${XDG_DATA_HOME:-$HOME/.local/share}`. It uses
+  the supplied PNG through an absolute icon path, with matching X11/Wayland
+  window identity. It does not run the AppImage, download anything, use sudo,
+  claim file associations, or change defaults. Rerun with a newer AppImage to
+  update. If your launcher has pinned an older manually-created entry, unpin it
+  and pin the newly installed **Aseprite Metadata Editor** entry instead.
+  The AppImage also includes hicolor icons, `.DirIcon`, and a `.desktop` entry
+  for desktop-integration tools. A standalone template is in `packaging/`.
 
 Build the Linux package with `cargo build --locked --release` then
 `packaging/appimage.sh`. Build the Windows installer with NSIS from `packaging/`:

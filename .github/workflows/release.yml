@@ -46,8 +46,20 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libgl1-mesa-dev desktop-file-utils
       - run: cargo test --locked && cargo build --locked --release
       - run: desktop-file-validate packaging/aseprite-metadata-editor.desktop
+      - run: bash tests/linux-installer.sh
       - run: packaging/appimage.sh
-      - run: sha256sum dist/*.AppImage > dist/SHA256SUMS-linux.txt
+      - name: Verify packaged launcher icon
+        run: |
+          (cd dist && ./Aseprite-Metadata-Editor-linux-x86_64.AppImage --appimage-extract >/dev/null)
+          cmp assets/icon-256.png dist/squashfs-root/.DirIcon
+          cmp assets/icon-256.png dist/squashfs-root/usr/share/icons/hicolor/256x256/apps/aseprite-metadata-editor.png
+          desktop-file-validate dist/squashfs-root/aseprite-metadata-editor.desktop
+          rm -rf dist/squashfs-root
+      - name: Attach user-local Linux installer and original icon
+        run: |
+          install -m755 packaging/install-linux.sh dist/install-linux.sh
+          install -m644 assets/icon-256.png dist/aseprite-metadata-editor.png
+          (cd dist && sha256sum *.AppImage *.sh *.png > SHA256SUMS-linux.txt)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux

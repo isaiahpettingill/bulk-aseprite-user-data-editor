@@ -1,6 +1,6 @@
 [package]
 name = "aseprite-metadata-editor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "BSD-3-Clause"
 
@@ -30,3 +30,6 @@ strip = true
 
 [dev-dependencies]
 asefile = "0.3.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "=0.30.13", default-features = false, features = ["x11", "wayland"] }
