@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.4
 
 - Add selected-file horizontal mirroring, origin-preserving canvas expansion, and lossless indexed/RGBA conversion with per-file failures.
 - Merge two animations into a new copy with larger canvas dimensions, separate layers, preserved tags and palette handling.
