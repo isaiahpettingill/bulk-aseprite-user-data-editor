@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add selected-file horizontal mirroring, origin-preserving canvas expansion, and lossless indexed/RGBA conversion with per-file failures.
+- Merge two animations into a new copy with larger canvas dimensions, separate layers, preserved tags and palette handling.
+- Preview staged artwork and integrate transforms with document undo/redo and existing native/web saves.
+
 ## 0.1.3
 
 - Give Linux desktop entry, window identity and theme icon a unique reverse-DNS name so KDE cannot fall back from our dashed name to Aseprite's icon.

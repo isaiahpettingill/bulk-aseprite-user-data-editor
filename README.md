@@ -1,7 +1,7 @@
 # Aseprite Metadata Editor
 
-A compact Rust/egui editor for individual and bulk `.aseprite` / `.ase` metadata.
-Sprite user data is the default target; saving preserves artwork bytes without re-encoding.
+A compact Rust/egui editor for individual and bulk `.aseprite` / `.ase` metadata and artwork operations.
+Sprite user data is the default target; metadata-only edits preserve artwork bytes without re-encoding.
 
 ## Use
 
@@ -40,7 +40,7 @@ edit. Oversized, tilemap, or unsupported previews show a short unavailable hint;
 metadata editing still works.
 
 Unsupported property encodings and unknown chunks are preserved rather than
-guessed. Artwork payloads remain unchanged. Malformed files are rejected, not
+guessed. Metadata-only edits leave artwork payloads unchanged. Malformed files are rejected, not
 silently repaired. Individual tag names, bounds, direction and repeat are editable.
 
 The web version starts with **Open files**: select one or more `.ase` / `.aseprite`
@@ -53,6 +53,38 @@ files as a ZIP, keeping relative paths. **It does not overwrite original files o
 write directly to a directory.** Folder picking depends on browser support;
 individual-file picking is the fallback. Download your edits before closing the
 tab. Duplicate or unsafe ZIP paths are rejected rather than overwritten.
+
+## Batch artwork tools
+
+Open **Artwork tools** for the selected files. Changes are staged: **Ctrl+S** uses
+native in-place saves with recovery backups, or downloads the existing web ZIP.
+Undo/redo works before and after saving; the preview shows staged artwork.
+
+- **Flip sprite** mirrors the complete canvas horizontally on every frame, including
+  hidden layers, cel offsets and linked cels—not just the first frame.
+- **Expand canvas** adds the entered pixels at the **right** and **bottom**. It does
+  not stretch, center, move or crop existing artwork. Zero leaves that axis unchanged.
+- **Convert to indexed** preserves exact colors and existing palette entries, adding
+  missing colors without quantization. If the 256-entry palette/transparency limit or
+  unsupported compositing would change the image, the entire file is skipped and
+  listed with its reason; other selected files continue. **Convert to RGBA** resolves
+  each frame's palette, including linked cels with animated palettes.
+- Select **exactly two** files to **Merge** their animations end-to-end. The displayed
+  order can be reversed. The result uses the larger width and height independently,
+  retaining pixel coordinates, separate layers and all animation tags (including
+  duplicate names). A new numbered merged copy is staged; neither input is replaced.
+  Desktop Save creates that copy beside the first input and refuses any existing
+  destination. Web Save includes the copy in the downloaded ZIP. Two indexed inputs
+  remain indexed when the exact union fits; otherwise the merged copy uses lossless
+  RGBA and reports why. Mixed/RGBA inputs produce RGBA with their palette swatches retained.
+
+Artwork transforms safely skip unsupported tilemaps/reference layers. Indexed
+conversion supports exact palette alpha for single-image-layer sprites, but skips
+multilayer partial alpha or incompatible compositing rather than changing appearance. Merge requires compatible color profiles, global settings
+and sprite-level user data; slices, tilesets, external references and unknown chunks
+are rejected because their identities cannot safely be relocated. These restrictions
+are reported rather than guessed. Metadata editing remains available for those files. See per-file issues before saving; a skipped file
+keeps its previous staged changes.
 
 ## Build
 
