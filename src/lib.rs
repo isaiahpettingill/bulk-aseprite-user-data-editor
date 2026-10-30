@@ -14,6 +14,7 @@ struct File {
     original: Vec<u8>,
     doc: Document,
     dirty: bool,
+    is_new: bool,
     undo: Vec<Vec<u8>>,
     redo: Vec<Vec<u8>>,
 }
@@ -67,6 +68,9 @@ pub struct Editor {
     open_clicks: u64,
     preview: Option<SpritePreview>,
     preview_decodes: u64,
+    expand_right: u16,
+    expand_bottom: u16,
+    merge_reverse: bool,
     #[cfg(not(target_arch = "wasm32"))]
     external_editor: Option<Option<external_editor::EditorCommand>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +121,12 @@ impl Editor {
     fn save_one(&mut self, index: usize) -> Result<(), String> {
         let file = &mut self.files[index];
         let bytes = file.doc.encode()?;
-        io::save(&file.path, &file.original, &bytes)?;
+        if file.is_new {
+            io::save_new(&file.path, &bytes)?;
+        } else {
+            io::save(&file.path, &file.original, &bytes)?;
+        }
+        file.is_new = false;
         file.original = bytes;
         file.dirty = false;
         Ok(())
@@ -176,20 +185,24 @@ impl Editor {
         let Some(index) = self.loaded_focus else {
             return;
         };
-        // Artwork is immutable in this metadata-only editor. Saving, undoing,
-        // or typing metadata must not decode the sprite again.
+        // Decode the staged document, not the on-disk original. Artwork actions
+        // and history invalidate this cache; ordinary metadata typing does not.
         if self.preview.as_ref().is_none_or(|p| p.index != index) {
             self.preview_decodes += 1;
-            let image = preview::render_first_frame(&self.files[index].original).map(|image| {
-                ui.ctx().load_texture(
-                    "focused-sprite-preview",
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [image.width, image.height],
-                        &image.rgba,
-                    ),
-                    egui::TextureOptions::NEAREST,
-                )
-            });
+            let image = self.files[index]
+                .doc
+                .encode()
+                .and_then(|bytes| preview::render_first_frame(&bytes))
+                .map(|image| {
+                    ui.ctx().load_texture(
+                        "focused-sprite-preview",
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [image.width, image.height],
+                            &image.rgba,
+                        ),
+                        egui::TextureOptions::NEAREST,
+                    )
+                });
             self.preview = Some(SpritePreview { index, image });
         }
         ui.add_space(8.0);
@@ -291,6 +304,7 @@ impl Editor {
                     original: bytes,
                     doc,
                     dirty: false,
+                    is_new: false,
                     undo: vec![],
                     redo: vec![],
                 });
@@ -501,9 +515,159 @@ impl Editor {
                 f.undo.push(before);
                 f.redo.clear();
                 f.doc = doc;
-                f.dirty = f.doc.encode().map(|b| b != f.original).unwrap_or(true);
+                f.dirty = f.is_new || f.doc.encode().map(|b| b != f.original).unwrap_or(true);
             }
         }
+    }
+    fn transform_selected(&mut self, operation: aseprite::ArtworkOperation) {
+        if !self.commit_draft() {
+            return;
+        }
+        self.error_files.clear();
+        let mut changes = Vec::new();
+        let mut unchanged = 0;
+        for &index in &self.selection.selected {
+            let file = &self.files[index];
+            let mut doc = file.doc.clone();
+            let result = (|| {
+                let before = file.doc.encode()?;
+                doc.transform(operation)?;
+                let after = doc.encode()?;
+                Ok::<bool, String>(after != before)
+            })();
+            match result {
+                Ok(true) => changes.push((index, doc)),
+                Ok(false) => unchanged += 1,
+                Err(error) => self
+                    .error_files
+                    .push(format!("{}: skipped — {error}", file.name)),
+            }
+        }
+        let changed = changes.len();
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|p| changes.iter().any(|(i, _)| *i == p.index))
+        {
+            self.preview = None;
+        }
+        // Keep this batch's Undo aligned across the current selection. A file
+        // skipped by the transform must not lose an earlier unrelated edit
+        // when its successful neighbors are undone.
+        if changed > 0 {
+            for &index in &self.selection.selected {
+                if !changes.iter().any(|(i, _)| *i == index) {
+                    changes.push((index, self.files[index].doc.clone()));
+                }
+            }
+        }
+        self.apply_changes(changes);
+        self.load_fields();
+        self.status = format!(
+            "Artwork: {changed} changed, {unchanged} unchanged, {} skipped. Ctrl+S to save; Ctrl+Z to undo.",
+            self.error_files.len()
+        );
+    }
+    fn merge_selected(&mut self) {
+        if self.selection.selected.len() != 2 || !self.commit_draft() {
+            return;
+        }
+        let mut selected: Vec<_> = self.selection.selected.iter().copied().collect();
+        if self.merge_reverse {
+            selected.reverse();
+        }
+        let first = &self.files[selected[0]];
+        let second = &self.files[selected[1]];
+        let result = first
+            .doc
+            .merge(&second.doc)
+            .and_then(|(doc, note)| doc.encode().map(|bytes| (bytes, note)));
+        let (bytes, note) = match result {
+            Ok(output) => output,
+            Err(error) => {
+                self.status = format!("Merge skipped: {error}. Neither source was changed.");
+                return;
+            }
+        };
+        let parent = first
+            .path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""));
+        let name_parent = first
+            .name
+            .rsplit_once('/')
+            .map(|(parent, _)| format!("{parent}/"))
+            .unwrap_or_default();
+        let mut suffix = 1u32;
+        let (name, path) = loop {
+            let basename = format!("merged-{suffix}.aseprite");
+            let path = parent.join(&basename);
+            let name = format!("{name_parent}{basename}");
+            let occupied = self.files.iter().any(|f| f.path == path || f.name == name);
+            #[cfg(not(target_arch = "wasm32"))]
+            let occupied = occupied || path.exists();
+            if !occupied {
+                break (name, path);
+            }
+            suffix += 1;
+        };
+        let index = self.files.len();
+        self.add(name.clone(), path, bytes);
+        if self.files.len() == index {
+            return;
+        }
+        let file = &mut self.files[index];
+        file.is_new = true;
+        file.dirty = true;
+        self.selection.choose(index, false, false, &[index]);
+        self.preview = None;
+        self.load_fields();
+        self.status =
+            format!("Created {name}. {note} Sources unchanged. Ctrl+S saves the new file.");
+    }
+    fn artwork_tools(&mut self, ui: &mut egui::Ui) {
+        let response = ui.collapsing("Artwork tools", |ui| {
+            ui.label(format!("Applies to all frames and layers in {} selected file(s).", self.selection.selected.len()));
+            ui.horizontal_wrapped(|ui| {
+                let response = ui.button("Flip sprite ↔").on_hover_text("Mirror horizontally across the whole canvas, in every frame.");
+                report_widget("flip-sprite", &response);
+                if response.clicked() {
+                    self.transform_selected(aseprite::ArtworkOperation::FlipHorizontal);
+                }
+                let response = ui.button("Convert to indexed").on_hover_text("Lossless only: add exact missing colors to the palette. Unsupported files are skipped, never quantized.");
+                report_widget("convert-indexed", &response);
+                if response.clicked() {
+                    self.transform_selected(aseprite::ArtworkOperation::ConvertToIndexed);
+                }
+                let response = ui.button("Convert to RGBA");
+                report_widget("convert-rgba", &response);
+                if response.clicked() {
+                    self.transform_selected(aseprite::ArtworkOperation::ConvertToRgba);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Add pixels:");
+                ui.add(egui::DragValue::new(&mut self.expand_right).range(0..=u16::MAX).prefix("Right "));
+                ui.add(egui::DragValue::new(&mut self.expand_bottom).range(0..=u16::MAX).prefix("Bottom "));
+                let response = ui.add_enabled(self.expand_right > 0 || self.expand_bottom > 0, egui::Button::new("Expand canvas"));
+                report_widget("expand-canvas", &response);
+                if response.clicked() {
+                    self.transform_selected(aseprite::ArtworkOperation::ExpandCanvas { right: self.expand_right, bottom: self.expand_bottom });
+                }
+            });
+            ui.small("Expands right/bottom only. No stretching, moving pixels, or cropping. Changes are staged until Save.");
+            let response = ui.add_enabled(self.selection.selected.len() == 2, egui::Button::new("Merge two → new sprite"))
+                .on_hover_text("Append animations in the displayed order, keeping the larger canvas, merging palettes and preserving all tags. Creates a new file; neither source is overwritten.");
+            report_widget("merge-sprites", &response);
+            if response.clicked() { self.merge_selected(); }
+            if self.selection.selected.len() == 2 {
+                ui.checkbox(&mut self.merge_reverse, "Reverse merge order");
+                let mut names: Vec<_> = self.selection.selected.iter().map(|&i| self.files[i].name.as_str()).collect();
+                if self.merge_reverse { names.reverse(); }
+                ui.small(format!("Append: {} → {}", names[0], names[1]));
+            }
+        });
+        report_widget("artwork-tools", &response.header_response);
     }
     fn undo(&mut self) {
         if !self.commit_draft() {
@@ -517,7 +681,10 @@ impl Editor {
                         f.redo.push(current);
                     }
                     f.doc = doc;
-                    f.dirty = bytes != f.original;
+                    f.dirty = f.is_new || bytes != f.original;
+                    if self.preview.as_ref().is_some_and(|p| p.index == i) {
+                        self.preview = None;
+                    }
                 }
             }
         }
@@ -535,7 +702,10 @@ impl Editor {
                         f.undo.push(current);
                     }
                     f.doc = doc;
-                    f.dirty = bytes != f.original;
+                    f.dirty = f.is_new || bytes != f.original;
+                    if self.preview.as_ref().is_some_and(|p| p.index == i) {
+                        self.preview = None;
+                    }
                 }
             }
         }
@@ -639,10 +809,15 @@ impl Editor {
                 }
             };
             #[cfg(not(target_arch = "wasm32"))]
-            match io::save(&f.path, &f.original, &bytes) {
+            match if f.is_new {
+                io::save_new(&f.path, &bytes)
+            } else {
+                io::save(&f.path, &f.original, &bytes)
+            } {
                 Ok(()) => {
                     f.original = bytes;
                     f.dirty = false;
+                    f.is_new = false;
                     saved += 1;
                 }
                 Err(e) => self.error_files.push(format!("{}: {e}", f.name)),
@@ -984,8 +1159,15 @@ impl Editor {
         self.sync_fields();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.label(&self.status);
-            for error in &self.error_files {
-                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            if !self.error_files.is_empty() {
+                egui::ScrollArea::vertical()
+                    .id_salt("file-issues")
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for error in &self.error_files {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        }
+                    });
             }
         });
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -999,6 +1181,8 @@ impl Editor {
                 ui.label("Select files to edit");
                 return;
             }
+            self.artwork_tools(ui);
+            ui.separator();
             let before = self.find_tab;
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.find_tab, false, "Edit");
@@ -1257,7 +1441,16 @@ impl Editor {
                                 Err(error) => self.status = error,
                             }
                         }
-                        if ui.button("Open without saving").clicked() {
+                        if ui
+                            .add_enabled(
+                                !self.files[index].is_new,
+                                egui::Button::new("Open without saving"),
+                            )
+                            .on_disabled_hover_text(
+                                "Save this new sprite first so Aseprite can open it.",
+                            )
+                            .clicked()
+                        {
                             self.external_pending = None;
                             self.launch_external(index);
                         }
@@ -1562,6 +1755,319 @@ mod app_tests {
         show(&mut editor);
         assert_eq!(editor.preview_decodes, 2);
         assert_eq!(editor.preview.as_ref().unwrap().index, 1);
+    }
+
+    #[test]
+    fn preview_renders_staged_canvas_not_original_file() {
+        let mut bytes = fixture();
+        bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+        bytes[14] = 1;
+        let mut layer = vec![0; 18];
+        layer[0] = 3;
+        layer[12] = 255;
+        let mut cel = vec![0; 20];
+        cel[6] = 255;
+        cel[16] = 2;
+        cel[18] = 1;
+        cel.extend([255, 0, 0, 255, 0, 255, 0, 255]);
+        for (kind, data) in [(0x2004u16, layer), (0x2005u16, cel)] {
+            bytes.extend(((data.len() + 6) as u32).to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(data);
+        }
+        let size = bytes.len() as u32;
+        bytes[..4].copy_from_slice(&size.to_le_bytes());
+        bytes[128..132].copy_from_slice(&(size - 128).to_le_bytes());
+        bytes[134..136].copy_from_slice(&2u16.to_le_bytes());
+        let mut e = Editor::default();
+        e.add(
+            "pixels.aseprite".into(),
+            "pixels.aseprite".into(),
+            bytes.clone(),
+        );
+        e.sync_fields();
+        let ctx = egui::Context::default();
+        let show = |e: &mut Editor| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| e.show_preview(ui));
+            });
+        };
+        show(&mut e);
+        assert_eq!(
+            e.preview.as_ref().unwrap().image.as_ref().unwrap().size(),
+            [2, 1]
+        );
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 1,
+            bottom: 1,
+        });
+        show(&mut e);
+        assert_eq!(
+            e.preview.as_ref().unwrap().image.as_ref().unwrap().size(),
+            [3, 2]
+        );
+        assert_eq!(e.files[0].original, bytes);
+        e.undo();
+        show(&mut e);
+        assert_eq!(
+            e.preview.as_ref().unwrap().image.as_ref().unwrap().size(),
+            [2, 1]
+        );
+    }
+
+    #[test]
+    fn artwork_batch_skips_failure_and_preserves_unselected_files() {
+        let mut e = editor();
+        let mut huge = fixture();
+        huge[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+        e.files[0].doc = Document::parse(&huge).unwrap();
+        e.files[0].original = huge.clone();
+        e.add(
+            "unselected.aseprite".into(),
+            "unselected.aseprite".into(),
+            fixture(),
+        );
+        e.selection.selected.extend([0, 1]);
+        e.sync_fields();
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 1,
+            bottom: 2,
+        });
+        assert_eq!(e.files[0].doc.encode().unwrap(), huge);
+        assert!(!e.files[0].dirty);
+        assert_eq!(e.files[1].doc.dimensions(), (2, 3));
+        assert!(e.files[1].dirty);
+        assert_eq!(e.files[2].doc.encode().unwrap(), fixture());
+        assert_eq!(e.error_files.len(), 1);
+        assert!(e.error_files[0].contains("one.aseprite"));
+        assert_eq!(e.files[1].undo.len(), 1);
+    }
+
+    #[test]
+    fn failed_artwork_batch_does_not_add_history() {
+        let mut e = editor();
+        let mut huge = fixture();
+        huge[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+        e.files[0].doc = Document::parse(&huge).unwrap();
+        e.files[0].original = huge;
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 1,
+            bottom: 0,
+        });
+        assert!(e.files[0].undo.is_empty());
+        assert!(e.files[0].redo.is_empty());
+        assert!(!e.files[0].dirty);
+    }
+
+    #[test]
+    fn partial_batch_undo_does_not_undo_skipped_files_previous_edit() {
+        let mut e = editor();
+        let mut huge = fixture();
+        huge[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+        e.files[0].doc = Document::parse(&huge).unwrap();
+        e.files[0].original = huge;
+        e.text = "keep earlier edit".into();
+        assert!(e.commit_draft());
+        e.selection.selected.extend([0, 1]);
+        e.sync_fields();
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 1,
+            bottom: 0,
+        });
+        e.undo();
+        assert_eq!(e.files[0].doc.targets()[0].text, "keep earlier edit");
+        assert_eq!(e.files[1].doc.dimensions(), (1, 1));
+        e.redo();
+        assert_eq!(e.files[0].doc.targets()[0].text, "keep earlier edit");
+        assert_eq!(e.files[1].doc.dimensions(), (2, 1));
+    }
+
+    #[test]
+    fn artwork_commits_pending_draft_and_undo_redo_refresh_preview() {
+        let mut e = editor();
+        let ctx = egui::Context::default();
+        let show = |e: &mut Editor| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| e.show_preview(ui));
+            });
+        };
+        show(&mut e);
+        e.text = "preserved draft".into();
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 2,
+            bottom: 3,
+        });
+        assert_eq!(e.files[0].doc.targets()[0].text, "preserved draft");
+        assert_eq!(e.files[0].doc.dimensions(), (3, 4));
+        assert!(e.preview.is_none());
+        show(&mut e);
+        assert_eq!(e.preview_decodes, 2);
+        e.undo();
+        assert_eq!(e.files[0].doc.dimensions(), (1, 1));
+        assert_eq!(e.files[0].doc.targets()[0].text, "preserved draft");
+        assert!(e.preview.is_none());
+        show(&mut e);
+        e.redo();
+        assert_eq!(e.files[0].doc.dimensions(), (3, 4));
+        assert!(e.preview.is_none());
+        show(&mut e);
+        assert_eq!(e.preview_decodes, 4);
+    }
+
+    #[test]
+    fn invalid_metadata_draft_prevents_artwork_changes() {
+        let mut e = editor();
+        e.properties = "invalid json".into();
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 1,
+            bottom: 1,
+        });
+        assert_eq!(e.files[0].doc.encode().unwrap(), fixture());
+        assert!(e.files[0].undo.is_empty());
+        assert!(e.status.contains("Invalid properties"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn new_sprite_save_is_no_clobber_and_dirty_survives_failed_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut e = editor();
+        let path = directory.path().join("new.aseprite");
+        e.files[0].path = path.clone();
+        e.files[0].is_new = true;
+        e.files[0].dirty = true;
+        std::fs::write(&path, b"unrelated file").unwrap();
+        assert!(e.save_one(0).is_err());
+        assert!(e.files[0].dirty && e.files[0].is_new);
+        assert_eq!(std::fs::read(&path).unwrap(), b"unrelated file");
+        std::fs::remove_file(&path).unwrap();
+        e.save_one(0).unwrap();
+        assert!(!e.files[0].dirty && !e.files[0].is_new);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            e.files[0].doc.encode().unwrap()
+        );
+        e.text = "subsequent edit".into();
+        e.save();
+        assert!(!e.files[0].dirty);
+        assert_eq!(
+            Document::parse(&std::fs::read(&path).unwrap())
+                .unwrap()
+                .targets()[0]
+                .text,
+            "subsequent edit"
+        );
+    }
+
+    #[test]
+    fn merge_stages_distinct_copy_and_keeps_sources_unchanged() {
+        let mut e = editor();
+        let mut larger = fixture();
+        larger[8..10].copy_from_slice(&5u16.to_le_bytes());
+        larger[10..12].copy_from_slice(&3u16.to_le_bytes());
+        e.files[1].doc = Document::parse(&larger).unwrap();
+        e.files[1].original = larger.clone();
+        e.selection.selected.extend([0, 1]);
+        e.sync_fields();
+        e.merge_selected();
+        assert_eq!(e.files.len(), 3, "{}", e.status);
+        assert_eq!(e.files[0].doc.encode().unwrap(), fixture());
+        assert_eq!(e.files[1].doc.encode().unwrap(), larger);
+        assert!(!e.files[0].dirty && !e.files[1].dirty);
+        assert!(e.files[2].dirty && e.files[2].is_new);
+        assert_eq!(e.files[2].doc.dimensions(), (5, 3));
+        let merged = e.files[2].doc.encode().unwrap();
+        assert_eq!(u16::from_le_bytes([merged[6], merged[7]]), 2);
+        assert_eq!(e.selection.selected, BTreeSet::from([2]));
+        assert!(!e.files[2].original.is_empty());
+        e.selection.selected = BTreeSet::from([0, 1]);
+        e.sync_fields();
+        e.merge_selected();
+        assert_eq!(e.files.len(), 4);
+        assert_ne!(e.files[2].path, e.files[3].path);
+        assert_ne!(e.files[2].name, e.files[3].name);
+    }
+
+    #[test]
+    fn new_sprite_undo_stays_dirty_until_first_save() {
+        let mut e = editor();
+        e.files[0].is_new = true;
+        e.files[0].dirty = true;
+        e.transform_selected(aseprite::ArtworkOperation::ExpandCanvas {
+            right: 1,
+            bottom: 0,
+        });
+        e.undo();
+        assert!(e.files[0].dirty);
+        assert_eq!(e.files[0].doc.encode().unwrap(), fixture());
+    }
+
+    #[test]
+    fn artwork_controls_fit_normal_window_and_click_expand_once() {
+        let mut e = editor();
+        e.expand_right = 2;
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 750.0));
+        let frame = |events| egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let rect = |name: &str| {
+            ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(format!("test-rect-{name}"))))
+                .unwrap()
+        };
+        let click = |pos| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+        let _ = ctx.run(frame(vec![]), |ctx| e.draw(ctx));
+        let _ = ctx.run(frame(click(rect("artwork-tools").center())), |ctx| {
+            e.draw(ctx)
+        });
+        // Finish the collapsing animation before checking and interacting.
+        ctx.style_mut(|style| style.animation_time = 0.0);
+        let _ = ctx.run(frame(vec![]), |ctx| e.draw(ctx));
+        for name in [
+            "flip-sprite",
+            "convert-indexed",
+            "convert-rgba",
+            "expand-canvas",
+            "merge-sprites",
+        ] {
+            assert!(screen.contains_rect(rect(name)), "{name}: {:?}", rect(name));
+        }
+        let _ = ctx.run(frame(click(rect("expand-canvas").center())), |ctx| {
+            e.draw(ctx)
+        });
+        assert_eq!(e.files[0].doc.dimensions(), (3, 1));
+        let _ = ctx.run(frame(vec![]), |ctx| e.draw(ctx));
+        assert_eq!(e.files[0].doc.dimensions(), (3, 1));
+        e.error_files = (0..1000)
+            .map(|i| format!("file-{i}.aseprite: skipped — too many colors"))
+            .collect();
+        let _ = ctx.run(frame(vec![]), |ctx| e.draw(ctx));
+        for name in [
+            "flip-sprite",
+            "convert-indexed",
+            "expand-canvas",
+            "merge-sprites",
+        ] {
+            assert!(screen.contains_rect(rect(name)), "large batch hid {name}");
+        }
     }
 
     #[test]

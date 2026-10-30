@@ -1,16 +1,19 @@
-//! Lossless container editor. No pixel decompression or image re-encoding occurs.
+//! Lossless container editor. Metadata-only edits retain artwork payload bytes.
 //! Layout follows aseprite/docs/ase-file-specs.md; association rules cross-checked
 //! against Aseprite's MIT dio decoder and LibreSprite's reader.
 //! https://github.com/aseprite/aseprite/blob/main/docs/ase-file-specs.md
 //! https://github.com/aseprite/aseprite/blob/main/src/dio/aseprite_decoder.cpp
 //! https://github.com/LibreSprite/LibreSprite/blob/master/src/app/file/ase_format.cpp
 //! The tests also decode edited files with the independent MIT asefile crate.
+mod merge;
+mod transforms;
 use aseprite_loader::binary::chunks::{
     layer::parse_layer_chunk,
     tags::{parse_tags_chunk, AnimationDirection},
     user_data::parse_user_data_chunk,
 };
 use serde_json::{json, Value};
+pub use transforms::ArtworkOperation;
 type Result<T> = std::result::Result<T, String>;
 const MAX_FILE: usize = 256 * 1024 * 1024;
 const MAX_ITEMS: usize = 100_000;

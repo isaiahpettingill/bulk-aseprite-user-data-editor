@@ -97,6 +97,19 @@ pub fn save(path: &Path, expected: &[u8], bytes: &[u8]) -> Result<(), String> {
     temp.persist(path).map_err(|e| e.to_string())?;
     Ok(())
 }
+/// Publish a newly merged copy without ever replacing another file.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let parent = path.parent().ok_or("Missing parent directory")?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    temp.write_all(bytes).map_err(|e| e.to_string())?;
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    temp.persist_noclobber(path).map_err(|e| {
+        format!("Cannot save merged copy (existing files are never overwritten): {e}")
+    })?;
+    Ok(())
+}
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 extern "C" {
@@ -115,6 +128,27 @@ extern "C" {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    #[test]
+    fn merged_copy_save_never_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("merged.aseprite");
+        save_new(&path, b"merged").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"merged");
+        assert!(save_new(&path, b"replacement").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"merged");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn merged_copy_save_refuses_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.aseprite");
+        std::fs::write(&original, b"original").unwrap();
+        let path = dir.path().join("merged.aseprite");
+        std::os::unix::fs::symlink(&original, &path).unwrap();
+        assert!(save_new(&path, b"replacement").is_err());
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+    }
     #[test]
     fn save_preserves_recovery_copy_and_refuses_external_change() {
         let dir = tempfile::tempdir().unwrap();
